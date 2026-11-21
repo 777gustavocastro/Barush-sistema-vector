@@ -5,21 +5,28 @@ import {
   X,
   RefreshCw,
   AlertCircle,
-  Sparkles,
   SlidersHorizontal,
   Download,
+  Loader2,
+  Cpu,
 } from 'lucide-react';
 import type { AcceptedFormat, SourceImageInfo, VectorizerUIState } from '../types/vectorizer';
 import { ACCEPTED_FORMATS, ACCEPTED_MIME_TYPES } from '../constants/vectorizerConfig';
+import {
+  analyzeImageColors,
+  decodeImageBytesToRgba,
+  validateImageDimensions,
+  validateRasterBytes,
+} from '../engine';
 
 interface UploadAreaProps {
   uiState: VectorizerUIState;
   sourceImage: SourceImageInfo | null;
-  onSelectFile: (info: SourceImageInfo) => void;
+  onSelectFile: (file: File, decoded: Omit<SourceImageInfo, 'previewUrl'>) => void;
   onClearImage: () => void;
 }
 
-function formatBytes(bytes: number): string {
+export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   const kb = bytes / 1024;
   if (kb < 1024) return `${kb.toFixed(kb >= 100 ? 0 : 1)} KB`;
@@ -27,19 +34,17 @@ function formatBytes(bytes: number): string {
   return `${mb.toFixed(2)} MB`;
 }
 
-function resolveAcceptedFormat(file: File): AcceptedFormat | null {
-  const mimeMatch = ACCEPTED_MIME_TYPES[file.type.toLowerCase()];
-  if (mimeMatch) {
-    if (file.name.toLowerCase().endsWith('.jpeg')) return 'JPEG';
-    return mimeMatch;
-  }
+function resolveDisplayFormat(detected: 'png' | 'jpg' | 'jpeg' | 'webp', fileName: string): AcceptedFormat {
+  if (detected === 'png') return 'PNG';
+  if (detected === 'webp') return 'WebP';
+  if (detected === 'jpeg' || fileName.toLowerCase().endsWith('.jpeg')) return 'JPEG';
+  return 'JPG';
+}
 
+function hasAcceptedExtensionOrMime(file: File): boolean {
+  if (ACCEPTED_MIME_TYPES[file.type.toLowerCase()]) return true;
   const ext = file.name.split('.').pop()?.toLowerCase();
-  if (ext === 'png') return 'PNG';
-  if (ext === 'jpg') return 'JPG';
-  if (ext === 'jpeg') return 'JPEG';
-  if (ext === 'webp') return 'WebP';
-  return null;
+  return ext === 'png' || ext === 'jpg' || ext === 'jpeg' || ext === 'webp';
 }
 
 export const UploadArea: React.FC<UploadAreaProps> = ({
@@ -50,55 +55,69 @@ export const UploadArea: React.FC<UploadAreaProps> = ({
 }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [isDragging, setIsDragging] = useState(false);
-  const [formatError, setFormatError] = useState<string | null>(null);
+  const [isDecoding, setIsDecoding] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
-  const isProcessing = uiState === 'processing';
+  const isBusy = uiState === 'processing' || isDecoding;
   const isInitial = uiState === 'initial' || !sourceImage;
 
-  const handleFiles = (files: FileList | null) => {
-    if (!files || files.length === 0 || isProcessing) return;
+  const handleFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0 || isBusy) return;
     const file = files[0];
-    const detectedFormat = resolveAcceptedFormat(file);
 
-    if (!detectedFormat) {
-      setFormatError(
-        'Formato de arquivo não aceito. Selecione uma imagem nos formatos PNG, JPG, JPEG ou WebP.'
+    if (!hasAcceptedExtensionOrMime(file)) {
+      setUploadError(
+        'Formato não suportado. Envie apenas imagens nos formatos PNG, JPG, JPEG ou WebP.'
       );
       return;
     }
 
-    setFormatError(null);
-    const previewUrl = URL.createObjectURL(file);
-    const img = new window.Image();
+    setIsDecoding(true);
+    setUploadError(null);
 
-    img.onload = () => {
-      onSelectFile({
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const rawBytes = new Uint8Array(arrayBuffer);
+
+      const headerValidation = validateRasterBytes(rawBytes, file.name);
+      if (!headerValidation.valid || !headerValidation.detectedFormat) {
+        throw new Error(
+          headerValidation.error ??
+            'Arquivo inválido ou corrompido. Envie uma imagem PNG, JPG, JPEG ou WebP íntegra.'
+        );
+      }
+
+      const rgbaImage = await decodeImageBytesToRgba(rawBytes, file.name);
+      validateImageDimensions(rgbaImage.width, rgbaImage.height);
+
+      const colorAnalysis = analyzeImageColors(rgbaImage);
+      const format = resolveDisplayFormat(headerValidation.detectedFormat, file.name);
+
+      onSelectFile(file, {
         name: file.name,
-        format: detectedFormat,
+        format,
+        byteLength: file.size,
         sizeLabel: formatBytes(file.size),
-        dimensionsLabel: `${img.naturalWidth} × ${img.naturalHeight} px`,
-        previewUrl,
-        isIllustrative: false,
+        width: rgbaImage.width,
+        height: rgbaImage.height,
+        dimensionsLabel: `${rgbaImage.width} × ${rgbaImage.height} px`,
+        rgbaImage,
+        colorAnalysis,
       });
-    };
-
-    img.onerror = () => {
-      onSelectFile({
-        name: file.name,
-        format: detectedFormat,
-        sizeLabel: formatBytes(file.size),
-        dimensionsLabel: 'Dimensões não identificadas',
-        previewUrl,
-        isIllustrative: false,
-      });
-    };
-
-    img.src = previewUrl;
+    } catch (err) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : 'Não foi possível ler a imagem selecionada. Verifique se o arquivo é válido.';
+      setUploadError(msg);
+    } finally {
+      setIsDecoding(false);
+    }
   };
 
   const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
-    if (!isProcessing) {
+    if (!isBusy) {
       setIsDragging(true);
     }
   };
@@ -111,11 +130,11 @@ export const UploadArea: React.FC<UploadAreaProps> = ({
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     setIsDragging(false);
-    handleFiles(event.dataTransfer.files);
+    void handleFiles(event.dataTransfer.files);
   };
 
   const triggerFileDialog = () => {
-    if (!isProcessing) {
+    if (!isBusy) {
       fileInputRef.current?.click();
     }
   };
@@ -124,21 +143,22 @@ export const UploadArea: React.FC<UploadAreaProps> = ({
     <section aria-labelledby="upload-area-heading" className="w-full">
       <input
         ref={fileInputRef}
+        data-testid="file-upload-input"
         type="file"
         accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
         className="sr-only"
         onChange={(event) => {
-          handleFiles(event.target.files);
+          void handleFiles(event.target.files);
           event.target.value = '';
         }}
       />
 
       {isInitial ? (
-        /* Estado inicial: Área principal de arrastar e soltar com orientação clara */
         <div className="rounded-2xl border border-zinc-800/90 bg-zinc-900/50 p-5 sm:p-6 shadow-sm">
           <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
             {/* Zona de arrastar e soltar */}
             <div
+              data-testid="upload-dropzone"
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
@@ -165,36 +185,42 @@ export const UploadArea: React.FC<UploadAreaProps> = ({
                       : 'border-zinc-800 bg-zinc-900 text-indigo-400'
                   }`}
                 >
-                  <ImageIcon className="h-6 w-6" />
+                  {isDecoding ? (
+                    <Loader2 className="h-6 w-6 animate-spin" />
+                  ) : (
+                    <ImageIcon className="h-6 w-6" />
+                  )}
                 </div>
 
                 <h1
                   id="upload-area-heading"
                   className="text-base sm:text-lg font-semibold text-zinc-100"
                 >
-                  Arraste e solte sua imagem aqui para começar
+                  {isDecoding
+                    ? 'Lendo e analisando a imagem...'
+                    : 'Arraste e solte sua imagem aqui para começar'}
                 </h1>
 
                 <p className="mt-1.5 text-sm text-zinc-400">
-                  Envie logotipos, ilustrações, ícones ou artes digitais para preparar a vetorização
-                  em curvas escaláveis.
+                  Converta logotipos, ilustrações, ícones, estampas ou fotografias em arquivos SVG
+                  verdadeiramente vetoriais e editáveis.
                 </p>
 
                 <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
                   <button
                     type="button"
+                    disabled={isBusy}
                     onClick={(event) => {
                       event.stopPropagation();
                       triggerFileDialog();
                     }}
-                    className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm hover:bg-indigo-500 transition-colors cursor-pointer"
+                    className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm hover:bg-indigo-500 disabled:opacity-50 transition-colors cursor-pointer"
                   >
                     <Upload className="h-4 w-4" />
                     Selecionar imagem
                   </button>
                 </div>
 
-                {/* Formatos aceitos */}
                 <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
                   <span className="text-xs text-zinc-500">Formatos aceitos:</span>
                   {ACCEPTED_FORMATS.map((fmt) => (
@@ -205,17 +231,18 @@ export const UploadArea: React.FC<UploadAreaProps> = ({
                       {fmt}
                     </span>
                   ))}
+                  <span className="text-[11px] text-zinc-500">· Até 25 MB</span>
                 </div>
               </div>
             </div>
 
-            {/* Orientação sobre como iniciar para usuários iniciantes */}
+            {/* Orientação sobre como iniciar */}
             <div className="lg:w-80 xl:w-96 shrink-0 rounded-xl border border-zinc-800/80 bg-zinc-950/50 p-5">
               <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
                 Como iniciar
               </h2>
               <p className="mt-1 text-xs text-zinc-500">
-                Fluxo direto em três passos simples:
+                Conversão 100% local e ilimitada em três passos:
               </p>
 
               <ol className="mt-4 space-y-3.5">
@@ -226,7 +253,7 @@ export const UploadArea: React.FC<UploadAreaProps> = ({
                   <div>
                     <p className="text-xs font-medium text-zinc-200">1. Envie sua imagem</p>
                     <p className="mt-0.5 text-xs text-zinc-500">
-                      Arraste um arquivo PNG, JPG, JPEG ou WebP ou clique em selecionar imagem.
+                      Arraste um arquivo PNG, JPG, JPEG ou WebP (com suporte a transparência).
                     </p>
                   </div>
                 </li>
@@ -236,9 +263,9 @@ export const UploadArea: React.FC<UploadAreaProps> = ({
                     <SlidersHorizontal className="h-3.5 w-3.5" />
                   </div>
                   <div>
-                    <p className="text-xs font-medium text-zinc-200">2. Escolha o perfil</p>
+                    <p className="text-xs font-medium text-zinc-200">2. Ajuste ou use o Automático</p>
                     <p className="mt-0.5 text-xs text-zinc-500">
-                      Use o modo Automático ou personalize cores, curvas e precisão dos detalhes.
+                      O sistema identifica o tipo de arte e escolhe entre VTracer e Potrace.
                     </p>
                   </div>
                 </li>
@@ -248,9 +275,9 @@ export const UploadArea: React.FC<UploadAreaProps> = ({
                     <Download className="h-3.5 w-3.5" />
                   </div>
                   <div>
-                    <p className="text-xs font-medium text-zinc-200">3. Compare e baixe em SVG</p>
+                    <p className="text-xs font-medium text-zinc-200">3. Compare e baixe o SVG</p>
                     <p className="mt-0.5 text-xs text-zinc-500">
-                      Inspecione o resultado lado a lado ou com controle deslizante antes de baixar.
+                      Inspecione com zoom/lupa e exporte caminhos editáveis para Inkscape ou Illustrator.
                     </p>
                   </div>
                 </li>
@@ -258,18 +285,19 @@ export const UploadArea: React.FC<UploadAreaProps> = ({
             </div>
           </div>
 
-          {formatError && (
+          {uploadError && (
             <div
               role="alert"
+              data-testid="upload-error-alert"
               className="mt-4 flex items-center gap-2.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3.5 py-2.5 text-xs text-rose-200"
             >
               <AlertCircle className="h-4 w-4 shrink-0 text-rose-400" />
-              <span>{formatError}</span>
+              <span>{uploadError}</span>
             </div>
           )}
         </div>
       ) : (
-        /* Barra compacta de envio quando já existe imagem carregada (mantém drag & drop e troca rápida) */
+        /* Barra superior com imagem carregada e substituição rápida */
         <div
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
@@ -282,33 +310,32 @@ export const UploadArea: React.FC<UploadAreaProps> = ({
         >
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div className="flex items-center gap-3 min-w-0">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-zinc-800 bg-zinc-950 overflow-hidden text-indigo-400">
-                {sourceImage.previewUrl ? (
-                  <img
-                    src={sourceImage.previewUrl}
-                    alt={sourceImage.name}
-                    className="h-full w-full object-cover"
-                  />
-                ) : (
-                  <ImageIcon className="h-4 w-4" />
-                )}
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-zinc-800 bg-checkerboard-dark overflow-hidden">
+                <img
+                  src={sourceImage.previewUrl}
+                  alt={sourceImage.name}
+                  className="h-full w-full object-contain"
+                />
               </div>
 
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <h1
                     id="upload-area-heading"
-                    className="text-sm font-medium text-zinc-100 truncate max-w-[240px] sm:max-w-xs md:max-w-md"
+                    className="text-sm font-medium text-zinc-100 truncate max-w-[220px] sm:max-w-xs md:max-w-md"
                   >
                     {sourceImage.name}
                   </h1>
                   <span className="rounded border border-zinc-700/80 bg-zinc-800/80 px-1.5 py-0.5 font-mono text-[10px] font-medium text-zinc-300">
                     {sourceImage.format}
                   </span>
-                  {sourceImage.isIllustrative && (
-                    <span className="inline-flex items-center gap-1 rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-300">
-                      <Sparkles className="h-2.5 w-2.5" />
-                      Amostra ilustrativa
+                  <span className="inline-flex items-center gap-1 rounded border border-indigo-500/30 bg-indigo-500/10 px-1.5 py-0.5 text-[10px] font-medium text-indigo-300">
+                    <Cpu className="h-2.5 w-2.5" />
+                    {sourceImage.colorAnalysis.categoryLabel}
+                  </span>
+                  {sourceImage.colorAnalysis.hasTransparency && (
+                    <span className="rounded border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] font-medium text-cyan-300">
+                      Transparência alfa
                     </span>
                   )}
                 </div>
@@ -316,7 +343,7 @@ export const UploadArea: React.FC<UploadAreaProps> = ({
                   {sourceImage.dimensionsLabel} · {sourceImage.sizeLabel}
                   <span className="hidden md:inline font-sans text-zinc-500">
                     {' '}
-                    · Arraste outra imagem PNG, JPG, JPEG ou WebP para substituir
+                    · Arraste outra imagem para substituir
                   </span>
                 </p>
               </div>
@@ -325,17 +352,21 @@ export const UploadArea: React.FC<UploadAreaProps> = ({
             <div className="flex items-center gap-2 shrink-0">
               <button
                 type="button"
-                disabled={isProcessing}
+                disabled={isBusy}
                 onClick={triggerFileDialog}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700/80 bg-zinc-800/70 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800 hover:text-white disabled:opacity-45 disabled:cursor-not-allowed transition-colors cursor-pointer"
               >
-                <RefreshCw className="h-3.5 w-3.5" />
-                Selecionar imagem
+                {isDecoding ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-3.5 w-3.5" />
+                )}
+                Substituir imagem
               </button>
 
               <button
                 type="button"
-                disabled={isProcessing}
+                disabled={isBusy}
                 onClick={onClearImage}
                 title="Remover imagem e voltar à tela inicial"
                 className="inline-flex items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-950/70 px-2.5 py-1.5 text-xs font-medium text-zinc-400 hover:border-zinc-700 hover:text-zinc-200 disabled:opacity-45 disabled:cursor-not-allowed transition-colors cursor-pointer"
@@ -346,13 +377,14 @@ export const UploadArea: React.FC<UploadAreaProps> = ({
             </div>
           </div>
 
-          {formatError && (
+          {uploadError && (
             <div
               role="alert"
+              data-testid="upload-error-alert"
               className="mt-3 flex items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200"
             >
               <AlertCircle className="h-3.5 w-3.5 shrink-0 text-rose-400" />
-              <span>{formatError}</span>
+              <span>{uploadError}</span>
             </div>
           )}
         </div>

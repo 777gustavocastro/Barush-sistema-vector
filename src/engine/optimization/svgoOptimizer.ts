@@ -7,10 +7,77 @@ export interface SvgOptimizeSettings {
 }
 
 /**
+ * Padroniza cabeçalho XML, namespace, dimensões físicas originais, viewBox escalável
+ * e IDs sequenciais nos caminhos (<path id="caminho-N">) para compatibilidade integral
+ * com Inkscape, Adobe Illustrator, Figma e navegadores.
+ */
+export function normalizeSvgForEditorsAndScaling(
+  rawSvg: string,
+  originalWidth: number,
+  originalHeight: number,
+  workingWidth: number,
+  workingHeight: number
+): string {
+  let svg = rawSvg
+    .trim()
+    .replace(/<!DOCTYPE[^>]*>/gi, '')
+    .replace(/<\?xml[^>]*\?>/gi, '')
+    .trim();
+
+  svg = svg.replace(/<svg\b([^>]*)>/i, (_fullMatch, existingAttrs: string) => {
+    let attrs = existingAttrs;
+
+    // Preserva viewBox existente (ex.: Potrace) ou define com as dimensões de trabalho
+    const hasViewBox = /\bviewBox\s*=\s*["'][^"']+["']/i.test(attrs);
+    if (!hasViewBox) {
+      attrs += ` viewBox="0 0 ${workingWidth} ${workingHeight}"`;
+    }
+
+    // Garante xmlns e version="1.1"
+    if (!/\bxmlns\s*=/i.test(attrs)) {
+      attrs = ` xmlns="http://www.w3.org/2000/svg"${attrs}`;
+    }
+    if (!/\bversion\s*=/i.test(attrs)) {
+      attrs = ` version="1.1"${attrs}`;
+    }
+
+    // Ajusta width e height para a proporção/dimensão real da imagem original enviada
+    if (/\bwidth\s*=\s*["'][^"']*["']/i.test(attrs)) {
+      attrs = attrs.replace(/\bwidth\s*=\s*["'][^"']*["']/i, `width="${originalWidth}"`);
+    } else {
+      attrs += ` width="${originalWidth}"`;
+    }
+
+    if (/\bheight\s*=\s*["'][^"']*["']/i.test(attrs)) {
+      attrs = attrs.replace(/\bheight\s*=\s*["'][^"']*["']/i, `height="${originalHeight}"`);
+    } else {
+      attrs += ` height="${originalHeight}"`;
+    }
+
+    if (!/\bpreserveAspectRatio\s*=/i.test(attrs)) {
+      attrs += ' preserveAspectRatio="xMidYMid meet"';
+    }
+
+    return `<svg${attrs}>`;
+  });
+
+  // Garante IDs editáveis e legíveis nos elementos <path> para painéis de camadas do Inkscape / Illustrator
+  let pathIndex = 0;
+  svg = svg.replace(/<path\b([^>]*?)(\/?>)/gi, (full, attrs: string, closeTag: string) => {
+    pathIndex++;
+    if (/\bid\s*=\s*["'][^"']+["']/i.test(attrs)) {
+      return full;
+    }
+    return `<path id="caminho-${pathIndex}"${attrs}${closeTag}`;
+  });
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n${svg}`;
+}
+
+/**
  * Configuração conservadora do SVGO projetada especificamente para preservar
- * 100% da fidelidade geométrica dos caminhos (<path>), transformações (<g>),
- * camadas de cor e atributo viewBox, removendo apenas metadados redundantes
- * (DOCTYPE, comentários, espaços supérfluos e atributos vazios).
+ * 100% da fidelidade geométrica dos caminhos (<path>), IDs de camadas, transformações (<g>)
+ * e atributo viewBox, removendo apenas metadados redundantes.
  */
 export function createFidelityPreservingSvgoConfig(
   settings: SvgOptimizeSettings = {}
@@ -25,13 +92,15 @@ export function createFidelityPreservingSvgoConfig(
         params: {
           floatPrecision: precision,
           overrides: {
-            // Não funde caminhos distintos para manter camadas vetoriais editáveis
+            // Preserva IDs determinísticos dos caminhos para edição no Inkscape/Illustrator
+            cleanupIds: false,
+            // Preserva a declaração <?xml ...?> útil para abertura direta em softwares desktop
+            removeXMLProcInst: false,
+            // Não funde caminhos distintos para manter cada forma/cor separada e editável
             mergePaths: false,
-            // Não converte primitivas geométricas explicitamente preservadas
             convertShapeToPath: false,
             // Mantém grupos estruturais com transformações do Potrace/VTracer intactos
             collapseGroups: false,
-            // Mantém precisão elevada nas coordenadas das curvas Bézier
             convertPathData: {
               floatPrecision: precision,
               transformPrecision: precision + 1,
@@ -39,7 +108,6 @@ export function createFidelityPreservingSvgoConfig(
             cleanupNumericValues: {
               floatPrecision: precision,
             },
-            // Nunca remove elementos potencialmente visíveis por heurística de tamanho
             removeHiddenElems: false,
           },
         },
@@ -68,7 +136,6 @@ export function optimizeVectorSvg(
   const optimizedSvg = result.data;
   const optimizedPathCount = countSvgPaths(optimizedSvg);
 
-  // Salvaguarda de integridade: se qualquer <path> for removido acidentalmente, preserva o original
   if (originalPathCount > 0 && optimizedPathCount < originalPathCount) {
     return {
       svg: rawSvg,

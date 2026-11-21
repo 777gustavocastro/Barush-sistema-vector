@@ -7,10 +7,12 @@ import {
   RotateCcw,
   SlidersHorizontal,
   Play,
-  Loader2,
+  Square,
+  Cpu,
 } from 'lucide-react';
 import type {
   AdvancedSettings,
+  SourceImageInfo,
   VectorizerProfileId,
   VectorizerUIState,
 } from '../types/vectorizer';
@@ -21,14 +23,17 @@ import {
 
 interface SettingsPanelProps {
   uiState: VectorizerUIState;
+  sourceImage: SourceImageInfo | null;
   selectedProfile: VectorizerProfileId;
   advancedSettings: AdvancedSettings;
   isAdvancedOpen: boolean;
+  hasUnappliedChanges: boolean;
   onSelectProfile: (profile: VectorizerProfileId) => void;
   onChangeSetting: (key: keyof AdvancedSettings, value: number) => void;
   onToggleAdvanced: () => void;
   onResetDefaults: () => void;
-  onRequestVectorizeInfo: () => void;
+  onStartVectorize: () => void;
+  onCancelVectorize: () => void;
 }
 
 const PROFILE_ICONS: Record<VectorizerProfileId, React.ReactNode> = {
@@ -39,33 +44,43 @@ const PROFILE_ICONS: Record<VectorizerProfileId, React.ReactNode> = {
 
 export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   uiState,
+  sourceImage,
   selectedProfile,
   advancedSettings,
   isAdvancedOpen,
+  hasUnappliedChanges,
   onSelectProfile,
   onChangeSetting,
   onToggleAdvanced,
   onResetDefaults,
-  onRequestVectorizeInfo,
+  onStartVectorize,
+  onCancelVectorize,
 }) => {
-  const isInitial = uiState === 'initial';
+  const isInitial = uiState === 'initial' || !sourceImage;
   const isProcessing = uiState === 'processing';
   const controlsDisabled = isProcessing;
 
   const activeProfileObj =
     VECTORIZER_PROFILES.find((p) => p.id === selectedProfile) ?? VECTORIZER_PROFILES[0];
 
-  const hasCustomChanges = Object.keys(activeProfileObj.defaults).some((key) => {
+  const baselineDefaults =
+    selectedProfile === 'auto' && sourceImage
+      ? sourceImage.colorAnalysis.recommendedParameters
+      : activeProfileObj.defaults;
+
+  const hasCustomChanges = Object.keys(baselineDefaults).some((key) => {
     const typedKey = key as keyof AdvancedSettings;
-    return advancedSettings[typedKey] !== activeProfileObj.defaults[typedKey];
+    return advancedSettings[typedKey] !== baselineDefaults[typedKey];
   });
+
+  const analysis = sourceImage?.colorAnalysis ?? null;
 
   return (
     <aside
       aria-labelledby="settings-panel-heading"
-      className="w-full lg:w-[350px] xl:w-[376px] shrink-0 rounded-2xl border border-zinc-800/90 bg-zinc-900/50 flex flex-col overflow-hidden"
+      className="w-full lg:w-[350px] xl:w-[380px] shrink-0 rounded-2xl border border-zinc-800/90 bg-zinc-900/50 flex flex-col overflow-hidden"
     >
-      {/* Cabeçalho do painel de configurações */}
+      {/* Cabeçalho */}
       <div className="flex items-center justify-between border-b border-zinc-800/80 px-5 py-4">
         <div className="flex items-center gap-2.5">
           <SlidersHorizontal className="h-4 w-4 text-indigo-400" />
@@ -82,11 +97,62 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       </div>
 
       <div className="flex-1 space-y-5 p-5">
-        {/* Seleção de Perfis */}
+        {/* Diagnóstico da Inteligência de Imagem */}
+        {analysis && (
+          <div
+            data-testid="image-intelligence-card"
+            className="rounded-xl border border-indigo-500/25 bg-indigo-950/20 p-3.5 space-y-2.5"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-200">
+                <Cpu className="h-3.5 w-3.5 text-indigo-400" />
+                Análise automática
+              </span>
+              <span className="rounded bg-indigo-500/20 px-2 py-0.5 font-mono text-[10px] font-medium text-indigo-200">
+                Motor: {analysis.recommendedEngine === 'potrace' ? 'Potrace' : 'VTracer'}
+              </span>
+            </div>
+
+            <p className="text-xs text-zinc-300 font-medium">{analysis.categoryLabel}</p>
+
+            <div className="grid grid-cols-3 gap-1.5 text-[11px]">
+              <div className="rounded bg-zinc-950/70 border border-zinc-800/80 px-2 py-1">
+                <span className="block text-[10px] text-zinc-500">Complexidade</span>
+                <span className="font-mono text-zinc-200">{analysis.complexityScore}/100</span>
+              </div>
+              <div className="rounded bg-zinc-950/70 border border-zinc-800/80 px-2 py-1">
+                <span className="block text-[10px] text-zinc-500">Contraste</span>
+                <span className="font-mono text-zinc-200">
+                  {Math.round(analysis.luminanceContrast * 100)}%
+                </span>
+              </div>
+              <div className="rounded bg-zinc-950/70 border border-zinc-800/80 px-2 py-1">
+                <span className="block text-[10px] text-zinc-500">Ruído medido</span>
+                <span className="font-mono text-zinc-200">{analysis.noiseLevel}/100</span>
+              </div>
+            </div>
+
+            {analysis.dominantHexColors.length > 0 && (
+              <div className="flex items-center gap-1.5 pt-0.5">
+                <span className="text-[10px] text-zinc-500 mr-1">Tons principais:</span>
+                {analysis.dominantHexColors.slice(0, 6).map((hex, i) => (
+                  <span
+                    key={`${hex}-${i}`}
+                    title={hex}
+                    className="h-3.5 w-3.5 rounded-full border border-zinc-700 shadow-2xs"
+                    style={{ backgroundColor: hex }}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Perfis de Qualidade */}
         <div>
           <div className="flex items-center justify-between mb-2.5">
             <span className="text-xs font-medium text-zinc-300">Perfil de vetorização</span>
-            <span className="text-[11px] text-zinc-500">3 predefinições</span>
+            <span className="text-[11px] text-zinc-500">3 perfis</span>
           </div>
 
           <div role="radiogroup" aria-label="Perfis de vetorização" className="space-y-2.5">
@@ -95,6 +161,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               return (
                 <button
                   key={profile.id}
+                  data-testid={`profile-${profile.id}`}
                   type="button"
                   role="radio"
                   aria-checked={isSelected}
@@ -151,6 +218,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
         <div className="rounded-xl border border-zinc-800/90 bg-zinc-950/40 overflow-hidden">
           <button
             type="button"
+            data-testid="toggle-advanced-settings"
             aria-expanded={isAdvancedOpen}
             aria-controls="advanced-settings-region"
             onClick={onToggleAdvanced}
@@ -189,7 +257,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                       >
                         {item.label}
                       </label>
-                      <span className="rounded border border-zinc-800 bg-zinc-900 px-1.5 py-0.5 font-mono text-[11px] text-indigo-300">
+                      <span
+                        data-testid={`value-${item.key}`}
+                        className="rounded border border-zinc-800 bg-zinc-900 px-1.5 py-0.5 font-mono text-[11px] text-indigo-300"
+                      >
                         {currentValue}
                         {item.unit}
                       </span>
@@ -197,6 +268,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
 
                     <input
                       id={`setting-${item.key}`}
+                      data-testid={`slider-${item.key}`}
                       type="range"
                       min={item.min}
                       max={item.max}
@@ -219,10 +291,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           )}
         </div>
 
-        {/* Botão para restaurar os padrões */}
+        {/* Restaurar padrões */}
         <div className="flex items-center justify-between pt-1">
           <button
             type="button"
+            data-testid="reset-defaults-button"
             disabled={controlsDisabled}
             onClick={onResetDefaults}
             className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-950/70 px-3 py-2 text-xs font-medium text-zinc-300 hover:border-zinc-700 hover:bg-zinc-900 hover:text-zinc-100 disabled:opacity-45 disabled:cursor-not-allowed transition-colors cursor-pointer"
@@ -237,30 +310,44 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
         </div>
       </div>
 
-      {/* Rodapé com ação principal de vetorização */}
-      <div className="border-t border-zinc-800/80 bg-zinc-950/60 p-4">
-        <button
-          type="button"
-          disabled={isInitial || isProcessing}
-          onClick={onRequestVectorizeInfo}
-          className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:bg-zinc-800 disabled:text-zinc-500 disabled:cursor-not-allowed transition-colors cursor-pointer"
-        >
-          {isProcessing ? (
-            <>
-              <Loader2 className="h-4 w-4 animate-spin" />
-              Processando vetorização...
-            </>
-          ) : (
-            <>
-              <Play className="h-4 w-4 fill-current" />
-              Vetorizar imagem
-            </>
-          )}
-        </button>
+      {/* Rodapé com ação principal */}
+      <div className="border-t border-zinc-800/80 bg-zinc-950/60 p-4 space-y-2">
+        {isProcessing ? (
+          <button
+            type="button"
+            data-testid="cancel-vectorize-button"
+            onClick={onCancelVectorize}
+            className="flex w-full items-center justify-center gap-2 rounded-xl border border-rose-500/40 bg-rose-500/15 px-4 py-3 text-sm font-semibold text-rose-200 hover:bg-rose-500/25 transition-colors cursor-pointer"
+          >
+            <Square className="h-3.5 w-3.5 fill-current" />
+            Cancelar processamento
+          </button>
+        ) : (
+          <button
+            type="button"
+            data-testid="start-vectorize-button"
+            disabled={isInitial}
+            onClick={onStartVectorize}
+            className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:bg-zinc-800 disabled:text-zinc-500 disabled:cursor-not-allowed transition-colors cursor-pointer"
+          >
+            <Play className="h-4 w-4 fill-current" />
+            {uiState === 'completed'
+              ? hasUnappliedChanges
+                ? 'Aplicar ajustes e vetorizar'
+                : 'Vetorizar novamente'
+              : 'Vetorizar imagem'}
+          </button>
+        )}
 
         {isInitial && (
-          <p className="mt-2 text-center text-[11px] text-zinc-500">
-            Envie uma imagem na área superior para liberar a ação de vetorização.
+          <p className="text-center text-[11px] text-zinc-500">
+            Envie uma imagem na área superior para liberar a vetorização.
+          </p>
+        )}
+
+        {uiState === 'completed' && hasUnappliedChanges && (
+          <p className="text-center text-[11px] text-amber-300/90">
+            Você alterou os parâmetros. Clique acima para gerar um novo SVG sem reenviar a imagem.
           </p>
         )}
       </div>

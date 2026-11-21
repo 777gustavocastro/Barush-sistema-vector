@@ -110,3 +110,21 @@ input[type='range'].studio-slider::-moz-range-thumb {
 ::-webkit-scrollbar-thumb:hover {
   background: #3f3f46;
 }
+
+/* Host de renderização de SVG vetorial real no DOM */
+.real-svg-host > svg {
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+}
+
+/* Destaque de contornos/caminhos reais editáveis sem alterar o arquivo exportado */
+.vector-wireframe svg path,
+.vector-wireframe svg polygon,
+.vector-wireframe svg polyline,
+.vector-wireframe svg circle,
+.vector-wireframe svg rect {
+  stroke: #6366f1 !important;
+  stroke-width: 0.85px !important;
+  vector-effect: non-scaling-stroke;
+}

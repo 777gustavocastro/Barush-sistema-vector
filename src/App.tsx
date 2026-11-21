@@ -1,26 +1,36 @@
-import { useEffect, useState } from 'react';
-import { Info, X } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   AdvancedSettings,
   CanvasBackground,
   ComparisonMode,
   SourceImageInfo,
+  VectorizationPipelineResult,
+  VectorizationProgressEvent,
   VectorizerProfileId,
   VectorizerUIState,
 } from './types/vectorizer';
 import {
   DEFAULT_ADVANCED_SETTINGS,
-  ILLUSTRATIVE_SOURCE_IMAGE,
   VECTORIZER_PROFILES,
 } from './constants/vectorizerConfig';
+import {
+  buildSvgExportArtifact,
+  createSvgBlob,
+  executeVectorizationAsync,
+  TempResourceManager,
+  validateSvgStructure,
+} from './engine';
 import { Header } from './components/Header';
 import { UploadArea } from './components/UploadArea';
 import { SettingsPanel } from './components/SettingsPanel';
 import { ResultsArea } from './components/ResultsArea';
 
 export function App() {
+  const tempManagerRef = useRef<TempResourceManager>(new TempResourceManager());
+  const abortControllerRef = useRef<AbortController | null>(null);
+
   const [uiState, setUIState] = useState<VectorizerUIState>('initial');
-  const [userImage, setUserImage] = useState<SourceImageInfo | null>(null);
+  const [sourceImage, setSourceImage] = useState<SourceImageInfo | null>(null);
   const [selectedProfile, setSelectedProfile] = useState<VectorizerProfileId>('auto');
   const [advancedSettings, setAdvancedSettings] = useState<AdvancedSettings>({
     ...DEFAULT_ADVANCED_SETTINGS,
@@ -30,53 +40,86 @@ export function App() {
   const [canvasBackground, setCanvasBackground] = useState<CanvasBackground>('transparent');
   const [zoom, setZoom] = useState<number>(100);
   const [sliderPosition, setSliderPosition] = useState<number>(50);
-  const [stageNotice, setStageNotice] = useState<string | null>(null);
 
-  // Libera URL de objeto anterior ao desmontar ou trocar de imagem
+  const [vectorResult, setVectorResult] = useState<VectorizationPipelineResult | null>(null);
+  const [progressEvent, setProgressEvent] = useState<VectorizationProgressEvent | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [hasUnappliedChanges, setHasUnappliedChanges] = useState<boolean>(false);
+
+  // Limpeza completa de ObjectURLs e workers ao desmontar a aplicação
   useEffect(() => {
+    const tempManager = tempManagerRef.current;
     return () => {
-      if (userImage?.previewUrl) {
-        URL.revokeObjectURL(userImage.previewUrl);
-      }
+      abortControllerRef.current?.abort();
+      tempManager.disposeAll();
     };
-  }, [userImage]);
+  }, []);
 
-  // Define qual imagem exibir nos estados não-iniciais (prioriza arquivo do usuário ou usa amostra ilustrativa)
-  const activeSourceImage: SourceImageInfo | null =
-    uiState === 'initial' ? null : (userImage ?? ILLUSTRATIVE_SOURCE_IMAGE);
+  const handleSelectFile = useCallback(
+    (file: File, decoded: Omit<SourceImageInfo, 'previewUrl'>) => {
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
 
-  const handleSelectUIState = (nextState: VectorizerUIState) => {
-    setStageNotice(null);
-    setUIState(nextState);
+      // Revoga preview anterior sem vazamento de memória
+      if (sourceImage?.previewUrl) {
+        tempManagerRef.current.revokeObjectUrl(sourceImage.previewUrl);
+      }
 
-    if (nextState === 'settings_ready') {
-      setIsAdvancedOpen(true);
-    }
+      const previewUrl = tempManagerRef.current.registerObjectUrl(file);
+      const nextSource: SourceImageInfo = {
+        ...decoded,
+        previewUrl,
+      };
 
-    if (nextState !== 'completed' && nextState !== 'ready_for_download') {
+      setSourceImage(nextSource);
+      setVectorResult(null);
+      setProgressEvent(null);
+      setErrorMessage(null);
+      setHasUnappliedChanges(false);
+      setZoom(100);
       setComparisonMode('side_by_side');
+
+      // Se estiver no perfil Automático, calibra os controles com a inteligência da imagem recém-enviada
+      if (selectedProfile === 'auto') {
+        setAdvancedSettings({ ...decoded.colorAnalysis.recommendedParameters });
+      }
+
+      setUIState('image_loaded');
+    },
+    [selectedProfile, sourceImage?.previewUrl]
+  );
+
+  const handleClearImage = useCallback(() => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+
+    if (sourceImage?.previewUrl) {
+      tempManagerRef.current.revokeObjectUrl(sourceImage.previewUrl);
     }
-  };
 
-  const handleSelectFile = (fileInfo: SourceImageInfo) => {
-    setStageNotice(null);
-    setUserImage(fileInfo);
+    setSourceImage(null);
+    setVectorResult(null);
+    setProgressEvent(null);
+    setErrorMessage(null);
+    setHasUnappliedChanges(false);
     setZoom(100);
-    setUIState('image_loaded');
-  };
-
-  const handleClearImage = () => {
-    setStageNotice(null);
-    setUserImage(null);
-    setZoom(100);
+    setComparisonMode('side_by_side');
     setUIState('initial');
-  };
+  }, [sourceImage?.previewUrl]);
 
   const handleSelectProfile = (profileId: VectorizerProfileId) => {
     setSelectedProfile(profileId);
-    const preset = VECTORIZER_PROFILES.find((item) => item.id === profileId);
-    if (preset) {
-      setAdvancedSettings({ ...preset.defaults });
+    if (profileId === 'auto' && sourceImage) {
+      setAdvancedSettings({ ...sourceImage.colorAnalysis.recommendedParameters });
+    } else {
+      const preset = VECTORIZER_PROFILES.find((item) => item.id === profileId);
+      if (preset) {
+        setAdvancedSettings({ ...preset.defaults });
+      }
+    }
+
+    if (uiState === 'completed') {
+      setHasUnappliedChanges(true);
     }
   };
 
@@ -85,55 +128,128 @@ export function App() {
       ...prev,
       [key]: value,
     }));
+    if (uiState === 'completed') {
+      setHasUnappliedChanges(true);
+    }
   };
 
   const handleResetDefaults = () => {
     setSelectedProfile('auto');
-    setAdvancedSettings({ ...DEFAULT_ADVANCED_SETTINGS });
-  };
-
-  const showEtapa1Notice = (context: 'vectorize' | 'download') => {
-    if (context === 'vectorize') {
-      setStageNotice(
-        'Etapa 1 — Interface concluída: o motor real de processamento vetorial será integrado na próxima etapa. Use a barra «Estados da interface» no topo para inspecionar todos os cenários visuais.'
-      );
+    if (sourceImage) {
+      setAdvancedSettings({ ...sourceImage.colorAnalysis.recommendedParameters });
     } else {
-      setStageNotice(
-        'Etapa 1 — Exportação visual pronta: a geração e o download real do arquivo SVG serão conectados na próxima etapa.'
-      );
+      setAdvancedSettings({ ...DEFAULT_ADVANCED_SETTINGS });
+    }
+    if (uiState === 'completed') {
+      setHasUnappliedChanges(true);
     }
   };
 
+  const handleCancelVectorize = useCallback(() => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    setProgressEvent(null);
+    setUIState(vectorResult ? 'completed' : sourceImage ? 'image_loaded' : 'initial');
+  }, [sourceImage, vectorResult]);
+
+  const handleStartVectorize = useCallback(async () => {
+    if (!sourceImage) return;
+
+    abortControllerRef.current?.abort();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    setErrorMessage(null);
+    setUIState('processing');
+    setProgressEvent({
+      stageId: 'analyze',
+      stageLabel: 'Iniciando análise inteligente e worker WebAssembly...',
+      percent: 8,
+    });
+
+    try {
+      const result = await executeVectorizationAsync(
+        sourceImage.rgbaImage,
+        {
+          profile: selectedProfile,
+          engine: 'auto',
+          autoTune: false, // Respeita fielmente os valores exibidos/ajustados nos controles da interface
+          colorCount: advancedSettings.colorCount,
+          detailPrecision: advancedSettings.detailPrecision,
+          curveSmoothness: advancedSettings.curveSmoothness,
+          pathSimplification: advancedSettings.pathSimplification,
+          noiseRemoval: advancedSettings.noiseRemoval,
+          contourSensitivity: advancedSettings.contourSensitivity,
+          optimizeSvg: true,
+        },
+        {
+          signal: controller.signal,
+          onProgress: (ev) => setProgressEvent(ev),
+        }
+      );
+
+      if (controller.signal.aborted) return;
+
+      setVectorResult(result);
+      setHasUnappliedChanges(false);
+      setProgressEvent(null);
+      setUIState('completed');
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        return;
+      }
+      const msg =
+        err instanceof Error
+          ? err.message
+          : 'Erro inesperado durante a conversão da imagem para SVG.';
+      setErrorMessage(msg);
+      setProgressEvent(null);
+      setUIState('error');
+    } finally {
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+      }
+    }
+  }, [advancedSettings, selectedProfile, sourceImage]);
+
+  const handleDownloadSvg = useCallback(() => {
+    if (!vectorResult || !sourceImage) return;
+
+    const validation = validateSvgStructure(vectorResult.svg);
+    if (!validation.valid) {
+      setErrorMessage(
+        `O arquivo SVG não passou na validação pré-download: ${validation.errors.join(' ')}`
+      );
+      setUIState('error');
+      return;
+    }
+
+    const artifact = buildSvgExportArtifact(vectorResult.svg, sourceImage.name);
+    const blob = createSvgBlob(artifact);
+    const downloadUrl = tempManagerRef.current.registerObjectUrl(blob);
+
+    const anchor = document.createElement('a');
+    anchor.href = downloadUrl;
+    anchor.download = artifact.fileName;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+
+    // Revoga após o disparo do download pelo navegador
+    window.setTimeout(() => {
+      tempManagerRef.current.revokeObjectUrl(downloadUrl);
+    }, 5000);
+  }, [sourceImage, vectorResult]);
+
   return (
     <div className="min-h-screen flex flex-col bg-zinc-950 text-zinc-100">
-      <Header uiState={uiState} onSelectUIState={handleSelectUIState} />
+      <Header uiState={uiState} />
 
       <main className="flex-1 mx-auto w-full max-w-[1440px] px-4 sm:px-6 lg:px-8 py-5 sm:py-6 space-y-5">
-        {/* Aviso informativo discreto quando o usuário aciona botões que dependem da Etapa 2 */}
-        {stageNotice && (
-          <div
-            role="status"
-            className="flex items-start sm:items-center justify-between gap-3 rounded-xl border border-indigo-500/35 bg-indigo-500/10 px-4 py-3 text-xs text-indigo-200"
-          >
-            <div className="flex items-start sm:items-center gap-2.5">
-              <Info className="h-4 w-4 shrink-0 text-indigo-400 mt-0.5 sm:mt-0" />
-              <span>{stageNotice}</span>
-            </div>
-            <button
-              type="button"
-              onClick={() => setStageNotice(null)}
-              aria-label="Fechar aviso"
-              className="rounded-md p-1 text-indigo-300 hover:bg-indigo-500/20 hover:text-white transition-colors cursor-pointer shrink-0"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        )}
-
         {/* 1. ÁREA DE ENVIO */}
         <UploadArea
           uiState={uiState}
-          sourceImage={activeSourceImage}
+          sourceImage={sourceImage}
           onSelectFile={handleSelectFile}
           onClearImage={handleClearImage}
         />
@@ -142,19 +258,26 @@ export function App() {
         <div className="flex flex-col lg:flex-row items-stretch gap-5">
           <SettingsPanel
             uiState={uiState}
+            sourceImage={sourceImage}
             selectedProfile={selectedProfile}
             advancedSettings={advancedSettings}
             isAdvancedOpen={isAdvancedOpen}
+            hasUnappliedChanges={hasUnappliedChanges}
             onSelectProfile={handleSelectProfile}
             onChangeSetting={handleChangeSetting}
             onToggleAdvanced={() => setIsAdvancedOpen((prev) => !prev)}
             onResetDefaults={handleResetDefaults}
-            onRequestVectorizeInfo={() => showEtapa1Notice('vectorize')}
+            onStartVectorize={() => void handleStartVectorize()}
+            onCancelVectorize={handleCancelVectorize}
           />
 
           <ResultsArea
             uiState={uiState}
-            sourceImage={activeSourceImage}
+            sourceImage={sourceImage}
+            vectorResult={vectorResult}
+            progressEvent={progressEvent}
+            errorMessage={errorMessage}
+            hasUnappliedChanges={hasUnappliedChanges}
             selectedProfile={selectedProfile}
             advancedSettings={advancedSettings}
             comparisonMode={comparisonMode}
@@ -165,8 +288,8 @@ export function App() {
             onChangeBackground={setCanvasBackground}
             onChangeZoom={setZoom}
             onChangeSliderPosition={setSliderPosition}
-            onRequestDownloadInfo={() => showEtapa1Notice('download')}
-            onRequestRevectorizeInfo={() => showEtapa1Notice('vectorize')}
+            onDownloadSvg={handleDownloadSvg}
+            onStartVectorize={() => void handleStartVectorize()}
             onClearToUpload={handleClearImage}
           />
         </div>

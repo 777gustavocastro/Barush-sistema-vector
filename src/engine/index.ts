@@ -11,3 +11,4 @@ export * from './validation/fileValidator';
 export * from './export/svgExporter';
 export * from './export/svgPreviewRenderer';
 export * from './temp/tempStorage';
+export * from './worker/vectorizerClient';

@@ -1,3 +1,10 @@
+import type {
+  ColorAnalysisReport,
+  RawRgbaImage,
+  VectorizationPipelineResult,
+  VectorizationProgressEvent,
+} from '../engine/types';
+
 export type AcceptedFormat = 'PNG' | 'JPG' | 'JPEG' | 'WebP';
 
 export type VectorizerProfileId = 'auto' | 'high_fidelity' | 'logo_illustration';
@@ -14,11 +21,9 @@ export interface AdvancedSettings {
 export type VectorizerUIState =
   | 'initial'
   | 'image_loaded'
-  | 'settings_ready'
   | 'processing'
   | 'completed'
-  | 'error'
-  | 'ready_for_download';
+  | 'error';
 
 export type ComparisonMode = 'side_by_side' | 'slider';
 
@@ -27,10 +32,14 @@ export type CanvasBackground = 'transparent' | 'white' | 'dark';
 export interface SourceImageInfo {
   name: string;
   format: AcceptedFormat;
+  byteLength: number;
   sizeLabel: string;
+  width: number;
+  height: number;
   dimensionsLabel: string;
-  previewUrl: string | null;
-  isIllustrative: boolean;
+  previewUrl: string;
+  rgbaImage: RawRgbaImage;
+  colorAnalysis: ColorAnalysisReport;
 }
 
 export interface ProfileDefinition {
@@ -51,10 +60,4 @@ export interface AdvancedSettingMeta {
   unit: string;
 }
 
-export interface UIStateOption {
-  id: VectorizerUIState;
-  stepNumber: number;
-  label: string;
-  shortLabel: string;
-  description: string;
-}
+export type { VectorizationPipelineResult, VectorizationProgressEvent };

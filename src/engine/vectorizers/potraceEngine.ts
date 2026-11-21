@@ -1,6 +1,6 @@
 import type { PotraceOptions } from 'esm-potrace-wasm';
 import type { RawRgbaImage, VectorizationParameters } from '../types';
-import { binarizeForMonochrome } from '../image-processing/filters';
+import { binarizeForMonochromeWithColor } from '../image-processing/filters';
 
 interface PotraceModule {
   init: () => Promise<void>;
@@ -55,14 +55,17 @@ async function loadPotraceModule(): Promise<PotraceModule> {
 }
 
 export function buildPotraceOptions(params: VectorizationParameters): PotraceOptions {
-  // turdsize: suprime speckles/ruídos em pixels quadrados
-  const turdsize = Math.max(1, Math.round(1 + (params.noiseRemoval / 100) * 16));
+  // turdsize: suprime speckles/ruídos em pixels quadrados (preserva detalhes quando noiseRemoval é baixo)
+  const turdsize =
+    params.noiseRemoval <= 10
+      ? 1
+      : Math.max(1, Math.round(1 + (params.noiseRemoval / 100) * 16));
 
   // alphamax: limiar de vértices (0 = polígono puro, 1.334 = sem cantos agudos)
-  const alphamax = Number((0.35 + (params.curveSmoothness / 100) * 0.95).toFixed(3));
+  const alphamax = Number((0.25 + (params.curveSmoothness / 100) * 1.05).toFixed(3));
 
-  // opttolerance: tolerância de simplificação de curvas Bézier (0.1 preciso .. 1.0 simplificado)
-  const opttolerance = Number((0.12 + (params.pathSimplification / 100) * 0.68).toFixed(3));
+  // opttolerance: tolerância de simplificação de curvas Bézier (0.08 preciso .. 0.85 simplificado)
+  const opttolerance = Number((0.08 + (params.pathSimplification / 100) * 0.75).toFixed(3));
 
   const useMultiLevelPosterize = params.colorCount > 2 && params.profile !== 'monochrome_logo';
 
@@ -70,17 +73,20 @@ export function buildPotraceOptions(params: VectorizationParameters): PotraceOpt
     turdsize,
     turnpolicy: 4, // POTRACE_TURNPOLICY_MINORITY (ótimo para logos e tipografia)
     alphamax,
-    opticurve: params.curveSmoothness >= 15 ? 1 : 0,
+    opticurve: params.curveSmoothness >= 12 ? 1 : 0,
     opttolerance,
     pathonly: false,
     extractcolors: useMultiLevelPosterize,
-    posterizelevel: useMultiLevelPosterize ? Math.min(8, Math.max(2, Math.round(params.colorCount / 2))) : 2,
+    posterizelevel: useMultiLevelPosterize
+      ? Math.min(8, Math.max(2, Math.round(params.colorCount / 2)))
+      : 2,
     posterizationalgorithm: 0,
   };
 }
 
 /**
- * Executa vetorização via Potrace (ideal para imagens monocromáticas, logos e alto contraste).
+ * Executa vetorização via Potrace (ideal para imagens monocromáticas, logos e alto contraste),
+ * preservando a cor real predominante da figura monocromática (inclusive branco sobre transparente).
  */
 export async function vectorizeWithPotrace(
   image: RawRgbaImage,
@@ -89,10 +95,14 @@ export async function vectorizeWithPotrace(
   const potraceMod = await loadPotraceModule();
   const options = buildPotraceOptions(params);
 
-  const prepared =
-    options.extractcolors === false
-      ? binarizeForMonochrome(image, params.contourSensitivity)
-      : image;
+  let prepared = image;
+  let foregroundHex: string | null = null;
+
+  if (options.extractcolors === false) {
+    const binarized = binarizeForMonochromeWithColor(image, params.contourSensitivity);
+    prepared = binarized.image;
+    foregroundHex = binarized.foregroundHex;
+  }
 
   const clamped = new Uint8ClampedArray(
     prepared.data.buffer,
@@ -100,7 +110,7 @@ export async function vectorizeWithPotrace(
     prepared.data.byteLength
   );
 
-  return potraceMod.potrace(
+  let svg = await potraceMod.potrace(
     {
       data: clamped,
       width: prepared.width,
@@ -108,4 +118,10 @@ export async function vectorizeWithPotrace(
     },
     options
   );
+
+  if (foregroundHex && foregroundHex.toLowerCase() !== '#000000') {
+    svg = svg.replace(/fill="#000000"/gi, `fill="${foregroundHex}"`);
+  }
+
+  return svg;
 }

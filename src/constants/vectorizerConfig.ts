@@ -3,8 +3,6 @@ import type {
   AdvancedSettingMeta,
   AdvancedSettings,
   ProfileDefinition,
-  SourceImageInfo,
-  UIStateOption,
 } from '../types/vectorizer';
 
 export const ACCEPTED_FORMATS: AcceptedFormat[] = ['PNG', 'JPG', 'JPEG', 'WebP'];
@@ -16,29 +14,20 @@ export const ACCEPTED_MIME_TYPES: Record<string, AcceptedFormat> = {
   'image/webp': 'WebP',
 };
 
-export const ILLUSTRATIVE_SOURCE_IMAGE: SourceImageInfo = {
-  name: 'amostra-marca-geometrica.png',
-  format: 'PNG',
-  sizeLabel: '428 KB',
-  dimensionsLabel: '1200 × 1200 px',
-  previewUrl: null,
-  isIllustrative: true,
-};
-
 export const VECTORIZER_PROFILES: ProfileDefinition[] = [
   {
     id: 'auto',
     label: 'Automático',
-    shortTag: 'Recomendado',
+    shortTag: 'Padrão inteligente',
     description:
-      'Equilibra definição de contornos, paleta de cores e suavidade para uso geral sem ajustes manuais.',
+      'Analisa cores, contraste, gradientes, transparência e detalhes para escolher motor e parâmetros ideais.',
     defaults: {
       colorCount: 16,
-      detailPrecision: 72,
-      curveSmoothness: 65,
-      pathSimplification: 40,
-      noiseRemoval: 35,
-      contourSensitivity: 68,
+      detailPrecision: 80,
+      curveSmoothness: 70,
+      pathSimplification: 26,
+      noiseRemoval: 25,
+      contourSensitivity: 74,
     },
   },
   {
@@ -46,13 +35,13 @@ export const VECTORIZER_PROFILES: ProfileDefinition[] = [
     label: 'Alta fidelidade',
     shortTag: 'Máximo detalhe',
     description:
-      'Preserva nuances cromáticas, microdetalhes e transições complexas com maior densidade de caminhos.',
+      'Prioriza preservação rigorosa de cores, contornos sutis, formas pequenas e transições cromáticas.',
     defaults: {
       colorCount: 48,
       detailPrecision: 94,
-      curveSmoothness: 45,
-      pathSimplification: 15,
-      noiseRemoval: 18,
+      curveSmoothness: 52,
+      pathSimplification: 8,
+      noiseRemoval: 12,
       contourSensitivity: 90,
     },
   },
@@ -61,13 +50,13 @@ export const VECTORIZER_PROFILES: ProfileDefinition[] = [
     label: 'Logo e ilustração',
     shortTag: 'Traço limpo',
     description:
-      'Otimizado para marcas, ícones e artes planas com curvas Bézier limpas e número reduzido de nós.',
+      'Prioriza curvas Bézier suaves, formas limpas, contornos bem definidos e filtragem de ruídos.',
     defaults: {
-      colorCount: 8,
-      detailPrecision: 80,
-      curveSmoothness: 85,
-      pathSimplification: 65,
-      noiseRemoval: 60,
+      colorCount: 10,
+      detailPrecision: 82,
+      curveSmoothness: 86,
+      pathSimplification: 42,
+      noiseRemoval: 45,
       contourSensitivity: 78,
     },
   },
@@ -81,7 +70,7 @@ export const ADVANCED_SETTINGS_META: AdvancedSettingMeta[] = [
   {
     key: 'colorCount',
     label: 'Quantidade de cores',
-    description: 'Limite máximo de cores distintas na paleta vetorial gerada.',
+    description: 'Limite máximo de cores distintas preservadas na paleta vetorial.',
     min: 2,
     max: 64,
     step: 1,
@@ -90,7 +79,7 @@ export const ADVANCED_SETTINGS_META: AdvancedSettingMeta[] = [
   {
     key: 'detailPrecision',
     label: 'Precisão dos detalhes',
-    description: 'Nível de retenção de formas pequenas, cantos agudos e elementos finos.',
+    description: 'Retenção de microformas, elementos finos e fidelidade entre camadas.',
     min: 10,
     max: 100,
     step: 1,
@@ -99,7 +88,7 @@ export const ADVANCED_SETTINGS_META: AdvancedSettingMeta[] = [
   {
     key: 'curveSmoothness',
     label: 'Suavidade das curvas',
-    description: 'Intensidade da interpolação em curvas Bézier para evitar bordas serrilhadas.',
+    description: 'Interpolação em curvas Bézier contínuas para eliminar serrilhados.',
     min: 0,
     max: 100,
     step: 1,
@@ -108,7 +97,7 @@ export const ADVANCED_SETTINGS_META: AdvancedSettingMeta[] = [
   {
     key: 'pathSimplification',
     label: 'Simplificação dos caminhos',
-    description: 'Reduz pontos de ancoragem redundantes para gerar um arquivo SVG mais leve.',
+    description: 'Reduz nós redundantes para gerar caminhos mais leves sem deformar a arte.',
     min: 0,
     max: 100,
     step: 1,
@@ -117,7 +106,7 @@ export const ADVANCED_SETTINGS_META: AdvancedSettingMeta[] = [
   {
     key: 'noiseRemoval',
     label: 'Remoção de ruídos',
-    description: 'Filtra artefatos de compressão e manchas isoladas da imagem original.',
+    description: 'Filtra artefatos de compressão e manchas isoladas antes e durante o traçado.',
     min: 0,
     max: 100,
     step: 1,
@@ -126,7 +115,7 @@ export const ADVANCED_SETTINGS_META: AdvancedSettingMeta[] = [
   {
     key: 'contourSensitivity',
     label: 'Sensibilidade dos contornos',
-    description: 'Limiar de detecção de contraste entre regiões adjacentes da imagem.',
+    description: 'Detecção de cantos vivos e transições de contraste entre regiões.',
     min: 10,
     max: 100,
     step: 1,
@@ -134,61 +123,10 @@ export const ADVANCED_SETTINGS_META: AdvancedSettingMeta[] = [
   },
 ];
 
-export const UI_STATE_OPTIONS: UIStateOption[] = [
-  {
-    id: 'initial',
-    stepNumber: 1,
-    label: 'Tela inicial sem imagem',
-    shortLabel: 'Inicial',
-    description: 'Estado vazio inicial focado no envio da imagem e orientação de uso.',
-  },
-  {
-    id: 'image_loaded',
-    stepNumber: 2,
-    label: 'Imagem carregada',
-    shortLabel: 'Carregada',
-    description: 'Imagem selecionada com pré-visualização original e metadados prontos.',
-  },
-  {
-    id: 'settings_ready',
-    stepNumber: 3,
-    label: 'Configurações disponíveis',
-    shortLabel: 'Configurações',
-    description: 'Perfis e parâmetros avançados abertos para ajuste fino antes de vetorizar.',
-  },
-  {
-    id: 'processing',
-    stepNumber: 4,
-    label: 'Processamento em andamento',
-    shortLabel: 'Processando',
-    description: 'Indicador visual de progresso e etapas durante o processamento.',
-  },
-  {
-    id: 'completed',
-    stepNumber: 5,
-    label: 'Resultado concluído',
-    shortLabel: 'Concluído',
-    description: 'Comparação interativa lado a lado ou deslizante entre original e vetorizada.',
-  },
-  {
-    id: 'error',
-    stepNumber: 6,
-    label: 'Erro durante o processamento',
-    shortLabel: 'Erro',
-    description: 'Feedback claro de falha com opções imediatas de recuperação.',
-  },
-  {
-    id: 'ready_for_download',
-    stepNumber: 7,
-    label: 'Arquivo pronto para download',
-    shortLabel: 'Download SVG',
-    description: 'Resumo final do arquivo vetorial preparado para exportação em SVG.',
-  },
-];
-
-export const PROCESSING_STEPS = [
-  { id: 'decode', label: 'Análise estrutural da imagem', status: 'done' as const },
-  { id: 'palette', label: 'Quantização e agrupamento de cores', status: 'done' as const },
-  { id: 'bezier', label: 'Traçado de curvas e contornos vetoriais', status: 'active' as const },
-  { id: 'optimize', label: 'Simplificação de caminhos e montagem SVG', status: 'pending' as const },
+export const PIPELINE_STAGES_ORDER = [
+  { id: 'analyze' as const, label: 'Análise inteligente de cores, contraste e detalhes' },
+  { id: 'preprocess' as const, label: 'Tratamento de transparência, escala e ruídos' },
+  { id: 'trace' as const, label: 'Traçado geométrico de curvas e contornos vetoriais' },
+  { id: 'optimize' as const, label: 'Otimização fiel de estrutura com SVGO' },
+  { id: 'validate' as const, label: 'Validação de caminhos editáveis e proporções' },
 ];

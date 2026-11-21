@@ -13,24 +13,33 @@ import {
   Image as ImageIcon,
   PenTool,
   MoveHorizontal,
-  Sparkles,
   FileCheck2,
   Upload,
+  Search,
+  Waypoints,
+  Play,
 } from 'lucide-react';
 import type {
   AdvancedSettings,
   CanvasBackground,
   ComparisonMode,
   SourceImageInfo,
+  VectorizationPipelineResult,
+  VectorizationProgressEvent,
   VectorizerProfileId,
   VectorizerUIState,
 } from '../types/vectorizer';
-import { PROCESSING_STEPS, VECTORIZER_PROFILES } from '../constants/vectorizerConfig';
-import { IllustrativeArtwork } from './IllustrativeArtwork';
+import { PIPELINE_STAGES_ORDER, VECTORIZER_PROFILES } from '../constants/vectorizerConfig';
+import { RealSvgViewport } from './RealSvgViewport';
+import { formatBytes } from './UploadArea';
 
 interface ResultsAreaProps {
   uiState: VectorizerUIState;
   sourceImage: SourceImageInfo | null;
+  vectorResult: VectorizationPipelineResult | null;
+  progressEvent: VectorizationProgressEvent | null;
+  errorMessage: string | null;
+  hasUnappliedChanges: boolean;
   selectedProfile: VectorizerProfileId;
   advancedSettings: AdvancedSettings;
   comparisonMode: ComparisonMode;
@@ -41,14 +50,21 @@ interface ResultsAreaProps {
   onChangeBackground: (bg: CanvasBackground) => void;
   onChangeZoom: (zoom: number) => void;
   onChangeSliderPosition: (pos: number) => void;
-  onRequestDownloadInfo: () => void;
-  onRequestRevectorizeInfo: () => void;
+  onDownloadSvg: () => void;
+  onStartVectorize: () => void;
   onClearToUpload: () => void;
 }
 
 const ZOOM_MIN = 50;
-const ZOOM_MAX = 250;
-const ZOOM_STEP = 25;
+const ZOOM_MAX = 600;
+
+function nextZoomStep(current: number, direction: 'in' | 'out'): number {
+  const steps = [50, 75, 100, 150, 200, 300, 400, 600];
+  if (direction === 'in') {
+    return steps.find((s) => s > current) ?? ZOOM_MAX;
+  }
+  return [...steps].reverse().find((s) => s < current) ?? ZOOM_MIN;
+}
 
 function getBackgroundClass(bg: CanvasBackground): string {
   switch (bg) {
@@ -71,6 +87,10 @@ function getLabelBadgeStyle(bg: CanvasBackground): string {
 export const ResultsArea: React.FC<ResultsAreaProps> = ({
   uiState,
   sourceImage,
+  vectorResult,
+  progressEvent,
+  errorMessage,
+  hasUnappliedChanges,
   selectedProfile,
   advancedSettings,
   comparisonMode,
@@ -81,20 +101,21 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
   onChangeBackground,
   onChangeZoom,
   onChangeSliderPosition,
-  onRequestDownloadInfo,
-  onRequestRevectorizeInfo,
+  onDownloadSvg,
+  onStartVectorize,
   onClearToUpload,
 }) => {
   const splitContainerRef = useRef<HTMLDivElement | null>(null);
   const [isDraggingSplit, setIsDraggingSplit] = useState(false);
-  const [showVectorNodes, setShowVectorNodes] = useState(true);
+  const [highlightPaths, setHighlightPaths] = useState(false);
+  const [detailLoupeEnabled, setDetailLoupeEnabled] = useState(false);
+  const [loupeCoords, setLoupeCoords] = useState<{ xPct: number; yPct: number } | null>(null);
 
-  const hasResult = uiState === 'completed' || uiState === 'ready_for_download';
+  const hasResult = uiState === 'completed' && vectorResult !== null;
   const isProcessing = uiState === 'processing';
   const isError = uiState === 'error';
-  const isInitial = uiState === 'initial';
-  const isLoadedPreProcess =
-    uiState === 'image_loaded' || uiState === 'settings_ready';
+  const isInitial = uiState === 'initial' || !sourceImage;
+  const isLoadedPreProcess = uiState === 'image_loaded' && sourceImage !== null;
 
   const profileObj =
     VECTORIZER_PROFILES.find((p) => p.id === selectedProfile) ?? VECTORIZER_PROFILES[0];
@@ -109,23 +130,42 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
     const rect = container.getBoundingClientRect();
     if (rect.width <= 0) return;
     const pct = ((clientX - rect.left) / rect.width) * 100;
-    const clamped = Math.max(5, Math.min(95, Math.round(pct)));
+    const clamped = Math.max(2, Math.min(98, Math.round(pct)));
     onChangeSliderPosition(clamped);
+  };
+
+  const handleLoupePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!detailLoupeEnabled) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const xPct = Math.max(0, Math.min(100, ((event.clientX - rect.left) / rect.width) * 100));
+    const yPct = Math.max(0, Math.min(100, ((event.clientY - rect.top) / rect.height) * 100));
+    setLoupeCoords({ xPct, yPct });
   };
 
   const bgClass = getBackgroundClass(canvasBackground);
   const badgeStyle = getLabelBadgeStyle(canvasBackground);
+
+  const activeStageIndex = progressEvent
+    ? PIPELINE_STAGES_ORDER.findIndex((s) => s.id === progressEvent.stageId)
+    : 0;
+
+  const aspectStyle: React.CSSProperties | undefined = sourceImage
+    ? {
+        aspectRatio: `${sourceImage.width} / ${sourceImage.height}`,
+      }
+    : undefined;
 
   return (
     <section
       aria-labelledby="results-area-heading"
       className="flex-1 min-w-0 rounded-2xl border border-zinc-800/90 bg-zinc-900/50 flex flex-col overflow-hidden"
     >
-      {/* Barra de ferramentas superior da Área de Resultados */}
+      {/* Barra de ferramentas superior */}
       <div className="border-b border-zinc-800/80 bg-zinc-950/50 px-4 py-3 sm:px-5">
         <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-3">
-          {/* Título + Alternador de modo de comparação */}
-          <div className="flex flex-wrap items-center justify-between sm:justify-start gap-3">
+          {/* Título + Alternador de comparação */}
+          <div className="flex flex-wrap items-center justify-between sm:justify-start gap-2.5">
             <h2
               id="results-area-heading"
               className="text-sm font-semibold text-zinc-100 shrink-0"
@@ -140,6 +180,7 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
             >
               <button
                 type="button"
+                data-testid="mode-side-by-side"
                 onClick={() => onChangeComparisonMode('side_by_side')}
                 className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
                   comparisonMode === 'side_by_side' || !hasResult
@@ -153,12 +194,13 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
 
               <button
                 type="button"
+                data-testid="mode-slider"
                 disabled={!hasResult}
                 onClick={() => onChangeComparisonMode('slider')}
                 title={
                   hasResult
                     ? 'Alternar para controle deslizante de comparação'
-                    : 'Disponível quando o resultado está concluído'
+                    : 'Disponível após concluir a vetorização'
                 }
                 className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
                   comparisonMode === 'slider' && hasResult
@@ -172,9 +214,9 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
             </div>
           </div>
 
-          {/* Controles de Zoom + Fundo do canvas */}
-          <div className="flex flex-wrap items-center gap-2.5">
-            {/* Controle de Zoom */}
+          {/* Controles de Zoom + Lupa de Detalhes + Destacar Caminhos + Fundo */}
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Zoom */}
             <div
               role="group"
               aria-label="Controles de zoom"
@@ -182,8 +224,9 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
             >
               <button
                 type="button"
+                data-testid="zoom-out-button"
                 disabled={isInitial || zoom <= ZOOM_MIN}
-                onClick={() => onChangeZoom(Math.max(ZOOM_MIN, zoom - ZOOM_STEP))}
+                onClick={() => onChangeZoom(nextZoomStep(zoom, 'out'))}
                 aria-label="Diminuir zoom"
                 title="Diminuir zoom"
                 className="rounded-md p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
@@ -191,16 +234,20 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
                 <ZoomOut className="h-3.5 w-3.5" />
               </button>
 
-              <span className="min-w-[52px] text-center font-mono text-xs font-medium text-zinc-200">
+              <span
+                data-testid="zoom-readout"
+                className="min-w-[52px] text-center font-mono text-xs font-medium text-zinc-200"
+              >
                 {zoom}%
               </span>
 
               <button
                 type="button"
+                data-testid="zoom-in-button"
                 disabled={isInitial || zoom >= ZOOM_MAX}
-                onClick={() => onChangeZoom(Math.min(ZOOM_MAX, zoom + ZOOM_STEP))}
+                onClick={() => onChangeZoom(nextZoomStep(zoom, 'in'))}
                 aria-label="Aumentar zoom"
-                title="Aumentar zoom"
+                title="Aumentar zoom (até 600%)"
                 className="rounded-md p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
               >
                 <ZoomIn className="h-3.5 w-3.5" />
@@ -218,7 +265,44 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
               </button>
             </div>
 
-            {/* Seletor de Fundo (Transparente, Branco, Escuro) */}
+            {/* Ampliação dos detalhes (Lupa sincronizada 4x) */}
+            <button
+              type="button"
+              data-testid="toggle-detail-loupe"
+              disabled={!hasResult}
+              onClick={() => {
+                setDetailLoupeEnabled((prev) => !prev);
+                setLoupeCoords(null);
+              }}
+              title="Ampliação dos detalhes (Lupa sincronizada 4× sobre pixels e curvas)"
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                detailLoupeEnabled && hasResult
+                  ? 'border-indigo-500/50 bg-indigo-500/15 text-indigo-200'
+                  : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              <Search className="h-3.5 w-3.5" />
+              <span>Lupa 4×</span>
+            </button>
+
+            {/* Destacar caminhos vetoriais reais */}
+            <button
+              type="button"
+              data-testid="toggle-wireframe"
+              disabled={!hasResult}
+              onClick={() => setHighlightPaths((prev) => !prev)}
+              title="Destacar os contornos dos caminhos vetoriais editáveis no SVG"
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                highlightPaths && hasResult
+                  ? 'border-indigo-500/50 bg-indigo-500/15 text-indigo-200'
+                  : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              <Waypoints className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Caminhos</span>
+            </button>
+
+            {/* Fundo (Transparente, Branco, Escuro) */}
             <div
               role="group"
               aria-label="Cor de fundo da visualização"
@@ -226,6 +310,7 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
             >
               <button
                 type="button"
+                data-testid="bg-transparent"
                 onClick={() => onChangeBackground('transparent')}
                 className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
                   canvasBackground === 'transparent'
@@ -240,6 +325,7 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
 
               <button
                 type="button"
+                data-testid="bg-white"
                 onClick={() => onChangeBackground('white')}
                 className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
                   canvasBackground === 'white'
@@ -254,6 +340,7 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
 
               <button
                 type="button"
+                data-testid="bg-dark"
                 onClick={() => onChangeBackground('dark')}
                 className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
                   canvasBackground === 'dark'
@@ -270,9 +357,12 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
         </div>
       </div>
 
-      {/* Destaque especial do estado: Arquivo pronto para download */}
-      {uiState === 'ready_for_download' && (
-        <div className="border-b border-emerald-500/25 bg-emerald-500/10 px-4 py-3.5 sm:px-5">
+      {/* Faixa de resumo do arquivo SVG pronto para download */}
+      {hasResult && vectorResult && (
+        <div
+          data-testid="svg-ready-banner"
+          className="border-b border-emerald-500/25 bg-emerald-500/10 px-4 py-3 sm:px-5"
+        >
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div className="flex items-start sm:items-center gap-3">
               <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/15 text-emerald-300">
@@ -281,26 +371,37 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
               <div>
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-xs font-semibold text-emerald-200">
-                    Arquivo pronto para download
+                    SVG vetorial validado e pronto
                   </span>
                   <span className="rounded bg-emerald-950/80 border border-emerald-500/30 px-1.5 py-0.5 font-mono text-[11px] text-emerald-300">
                     {outputSvgFilename}
                   </span>
+                  <span className="rounded bg-zinc-900/90 border border-zinc-700/80 px-1.5 py-0.5 font-mono text-[10px] text-zinc-200">
+                    {vectorResult.engineUsed === 'potrace' ? 'Potrace WASM' : 'VTracer WASM'}
+                  </span>
                 </div>
                 <p className="mt-0.5 text-xs text-emerald-200/80">
-                  Estrutura vetorial escalável preparada com o perfil{' '}
-                  <strong>{profileObj.label}</strong> ({advancedSettings.colorCount} cores).
+                  <strong>{vectorResult.validation.pathCount}</strong> caminhos editáveis ·{' '}
+                  <strong>{formatBytes(vectorResult.validation.byteLength)}</strong>
+                  {vectorResult.optimization && vectorResult.optimization.savedRatio > 0.01 && (
+                    <>
+                      {' '}
+                      (SVGO economizou {(vectorResult.optimization.savedRatio * 100).toFixed(0)}%)
+                    </>
+                  )}{' '}
+                  · processado em {vectorResult.durationMs} ms
                 </p>
               </div>
             </div>
 
             <button
               type="button"
-              onClick={onRequestDownloadInfo}
+              data-testid="banner-download-svg-button"
+              onClick={onDownloadSvg}
               className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-500 px-4 py-2 text-xs font-semibold text-zinc-950 shadow-xs hover:bg-emerald-400 transition-colors cursor-pointer shrink-0"
             >
               <Download className="h-4 w-4" />
-              Baixar SVG agora
+              Baixar SVG
             </button>
           </div>
         </div>
@@ -319,8 +420,8 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
                 Original
               </span>
               <p className="mt-2.5 max-w-xs text-xs leading-relaxed text-zinc-500">
-                A imagem enviada será exibida nesta área para inspeção de resolução, bordas e cores
-                originais.
+                A imagem enviada será exibida nesta área para inspeção de resolução, transparência e
+                cores originais.
               </p>
             </div>
 
@@ -332,19 +433,19 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
                 Vetorizada
               </span>
               <p className="mt-2.5 max-w-xs text-xs leading-relaxed text-zinc-500">
-                O resultado em curvas escaláveis SVG aparecerá aqui com suporte a zoom, troca de
-                fundo e comparação.
+                O arquivo SVG real com curvas escaláveis aparecerá aqui com suporte a zoom de até
+                600%, lupa 4× e comparação deslizante.
               </p>
             </div>
           </div>
         )}
 
-        {/* ESTADOS 2 e 3: Imagem carregada / Configurações disponíveis */}
-        {isLoadedPreProcess && (
+        {/* ESTADO 2: Imagem carregada aguardando vetorização */}
+        {isLoadedPreProcess && sourceImage && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 h-full min-h-[380px]">
             {/* Quadro Original */}
             <div
-              className={`relative rounded-xl border border-zinc-800 overflow-hidden flex items-center justify-center min-h-[300px] ${bgClass}`}
+              className={`relative rounded-xl border border-zinc-800 overflow-auto flex items-center justify-center min-h-[320px] p-4 ${bgClass}`}
             >
               <div className="absolute top-3 left-3 z-10 flex items-center gap-2">
                 <span
@@ -352,21 +453,30 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
                 >
                   Original
                 </span>
+                <span className="rounded border border-zinc-700/70 bg-zinc-900/80 px-2 py-0.5 text-[10px] font-mono text-zinc-300">
+                  {sourceImage.dimensionsLabel}
+                </span>
               </div>
 
               <div
-                className="transition-transform duration-150 ease-out"
-                style={{ transform: `scale(${zoom / 100})` }}
+                className="max-w-full max-h-[340px] transition-transform duration-150 ease-out"
+                style={{
+                  ...aspectStyle,
+                  transform: `scale(${zoom / 100})`,
+                }}
               >
-                <IllustrativeArtwork
-                  variant="raster"
-                  customImageUrl={sourceImage?.previewUrl}
+                <img
+                  src={sourceImage.previewUrl}
+                  alt={sourceImage.name}
+                  className="w-full h-full object-contain select-none"
+                  style={zoom >= 250 ? { imageRendering: 'pixelated' } : undefined}
+                  draggable={false}
                 />
               </div>
             </div>
 
-            {/* Quadro Vetorizada aguardando execução */}
-            <div className="relative rounded-xl border border-zinc-800 bg-zinc-950/75 p-6 flex flex-col items-center justify-center text-center min-h-[300px]">
+            {/* Quadro Vetorizada pronto para iniciar */}
+            <div className="relative rounded-xl border border-zinc-800 bg-zinc-950/75 p-6 flex flex-col items-center justify-center text-center min-h-[320px]">
               <div className="absolute top-3 left-3 z-10">
                 <span className="rounded-md border border-zinc-800 bg-zinc-900/90 px-2.5 py-1 text-xs font-medium text-zinc-300">
                   Vetorizada
@@ -378,14 +488,14 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
               </div>
 
               <h3 className="text-sm font-semibold text-zinc-100">
-                Pronta para iniciar a vetorização
+                Pronta para vetorizar localmente
               </h3>
               <p className="mt-1.5 max-w-sm text-xs leading-relaxed text-zinc-400">
-                Revise o perfil selecionado no painel lateral ou abra as configurações avançadas
-                para personalizar o resultado.
+                Identificamos <strong>{sourceImage.colorAnalysis.categoryLabel}</strong>. Clique em{' '}
+                <strong>Vetorizar imagem</strong> ou ajuste os controles ao lado.
               </p>
 
-              <div className="mt-5 grid grid-cols-2 gap-2 w-full max-w-xs text-left">
+              <div className="mt-4 grid grid-cols-2 gap-2 w-full max-w-xs text-left">
                 <div className="rounded-lg border border-zinc-800/90 bg-zinc-900/70 px-3 py-2">
                   <span className="block text-[10px] uppercase tracking-wider text-zinc-500">
                     Perfil ativo
@@ -417,16 +527,24 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
                   </span>
                 </div>
               </div>
+
+              <button
+                type="button"
+                onClick={onStartVectorize}
+                className="mt-5 inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-2.5 text-xs font-semibold text-white shadow-xs hover:bg-indigo-500 transition-colors cursor-pointer"
+              >
+                <Play className="h-3.5 w-3.5 fill-current" />
+                Vetorizar imagem agora
+              </button>
             </div>
           </div>
         )}
 
-        {/* ESTADO 4: Processamento em andamento */}
-        {isProcessing && (
+        {/* ESTADO 3: Processamento assíncrono em andamento */}
+        {isProcessing && sourceImage && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 h-full min-h-[380px]">
-            {/* Original mantida para referência */}
             <div
-              className={`relative rounded-xl border border-zinc-800 overflow-hidden flex items-center justify-center min-h-[300px] ${bgClass}`}
+              className={`relative rounded-xl border border-zinc-800 overflow-hidden flex items-center justify-center min-h-[320px] p-4 ${bgClass}`}
             >
               <div className="absolute top-3 left-3 z-10">
                 <span
@@ -437,21 +555,25 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
               </div>
 
               <div
-                className="opacity-80 transition-transform duration-150"
-                style={{ transform: `scale(${zoom / 100})` }}
+                className="max-w-full max-h-[340px] opacity-80"
+                style={aspectStyle}
               >
-                <IllustrativeArtwork
-                  variant="raster"
-                  customImageUrl={sourceImage?.previewUrl}
+                <img
+                  src={sourceImage.previewUrl}
+                  alt={sourceImage.name}
+                  className="w-full h-full object-contain select-none"
+                  draggable={false}
                 />
               </div>
             </div>
 
-            {/* Painel de progresso na área Vetorizada */}
-            <div className="relative rounded-xl border border-indigo-500/30 bg-zinc-950/85 p-6 flex flex-col items-center justify-center min-h-[300px]">
+            <div
+              data-testid="processing-panel"
+              className="relative rounded-xl border border-indigo-500/30 bg-zinc-950/85 p-6 flex flex-col items-center justify-center min-h-[320px]"
+            >
               <div className="absolute top-3 left-3 z-10">
                 <span className="rounded-md border border-indigo-500/30 bg-indigo-500/10 px-2.5 py-1 text-xs font-medium text-indigo-200">
-                  Vetorizada · Em andamento
+                  Vetorizada · Processando
                 </span>
               </div>
 
@@ -462,92 +584,106 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
                   </div>
                   <div>
                     <h3 className="text-sm font-semibold text-zinc-100">
-                      Processamento em andamento
+                      Vetorizando em WebAssembly
                     </h3>
                     <p className="text-xs text-zinc-400">
-                      Gerando geometria vetorial com perfil {profileObj.label}
+                      {progressEvent?.stageLabel ?? 'Inicializando motor vetorial local...'}
                     </p>
                   </div>
                 </div>
 
-                {/* Barra visual de progresso */}
                 <div className="mb-5">
                   <div className="flex items-center justify-between text-xs mb-1.5">
-                    <span className="text-zinc-400">Progresso ilustrativo</span>
-                    <span className="font-mono text-indigo-300">68%</span>
+                    <span className="text-zinc-400">Progresso real</span>
+                    <span className="font-mono text-indigo-300">
+                      {progressEvent?.percent ?? 8}%
+                    </span>
                   </div>
                   <div className="h-2 w-full rounded-full bg-zinc-800 overflow-hidden">
-                    <div className="h-full w-[68%] rounded-full bg-indigo-500 transition-all" />
+                    <div
+                      className="h-full rounded-full bg-indigo-500 transition-all duration-200"
+                      style={{ width: `${progressEvent?.percent ?? 8}%` }}
+                    />
                   </div>
                 </div>
 
-                {/* Etapas visuais */}
-                <ul className="space-y-2.5">
-                  {PROCESSING_STEPS.map((step) => (
-                    <li
-                      key={step.id}
-                      className="flex items-center gap-2.5 rounded-lg border border-zinc-800/80 bg-zinc-900/60 px-3 py-2 text-xs"
-                    >
-                      {step.status === 'done' && (
-                        <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
-                      )}
-                      {step.status === 'active' && (
-                        <Loader2 className="h-4 w-4 shrink-0 animate-spin text-indigo-400" />
-                      )}
-                      {step.status === 'pending' && (
-                        <span className="h-3.5 w-3.5 shrink-0 rounded-full border border-zinc-700" />
-                      )}
-                      <span
-                        className={
-                          step.status === 'pending'
-                            ? 'text-zinc-500'
-                            : step.status === 'active'
-                              ? 'font-medium text-zinc-100'
-                              : 'text-zinc-300'
-                        }
+                <ul className="space-y-2">
+                  {PIPELINE_STAGES_ORDER.map((stage, idx) => {
+                    const status =
+                      idx < activeStageIndex
+                        ? 'done'
+                        : idx === activeStageIndex
+                          ? 'active'
+                          : 'pending';
+
+                    return (
+                      <li
+                        key={stage.id}
+                        className="flex items-center gap-2.5 rounded-lg border border-zinc-800/80 bg-zinc-900/60 px-3 py-2 text-xs"
                       >
-                        {step.label}
-                      </span>
-                    </li>
-                  ))}
+                        {status === 'done' && (
+                          <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
+                        )}
+                        {status === 'active' && (
+                          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-indigo-400" />
+                        )}
+                        {status === 'pending' && (
+                          <span className="h-3.5 w-3.5 shrink-0 rounded-full border border-zinc-700" />
+                        )}
+                        <span
+                          className={
+                            status === 'pending'
+                              ? 'text-zinc-500'
+                              : status === 'active'
+                                ? 'font-medium text-zinc-100'
+                                : 'text-zinc-300'
+                          }
+                        >
+                          {stage.label}
+                        </span>
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
             </div>
           </div>
         )}
 
-        {/* ESTADO 6: Erro durante o processamento */}
+        {/* ESTADO 4: Erro durante o processamento */}
         {isError && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 h-full min-h-[380px]">
-            <div
-              className={`relative rounded-xl border border-zinc-800 overflow-hidden flex items-center justify-center min-h-[300px] ${bgClass}`}
-            >
-              <div className="absolute top-3 left-3 z-10">
-                <span
-                  className={`rounded-md border px-2.5 py-1 text-xs font-medium backdrop-blur-xs ${badgeStyle}`}
-                >
-                  Original
-                </span>
-              </div>
-
+            {sourceImage && (
               <div
-                className="transition-transform duration-150"
-                style={{ transform: `scale(${zoom / 100})` }}
+                className={`relative rounded-xl border border-zinc-800 overflow-hidden flex items-center justify-center min-h-[320px] p-4 ${bgClass}`}
               >
-                <IllustrativeArtwork
-                  variant="raster"
-                  customImageUrl={sourceImage?.previewUrl}
-                />
+                <div className="absolute top-3 left-3 z-10">
+                  <span
+                    className={`rounded-md border px-2.5 py-1 text-xs font-medium backdrop-blur-xs ${badgeStyle}`}
+                  >
+                    Original
+                  </span>
+                </div>
+
+                <div className="max-w-full max-h-[340px]" style={aspectStyle}>
+                  <img
+                    src={sourceImage.previewUrl}
+                    alt={sourceImage.name}
+                    className="w-full h-full object-contain select-none"
+                    draggable={false}
+                  />
+                </div>
               </div>
-            </div>
+            )}
 
             <div
               role="alert"
-              className="relative rounded-xl border border-rose-500/35 bg-rose-950/20 p-6 flex flex-col items-center justify-center text-center min-h-[300px]"
+              data-testid="processing-error-panel"
+              className="relative rounded-xl border border-rose-500/35 bg-rose-950/20 p-6 flex flex-col items-center justify-center text-center min-h-[320px]"
             >
               <div className="absolute top-3 left-3 z-10">
                 <span className="rounded-md border border-rose-500/30 bg-rose-500/15 px-2.5 py-1 text-xs font-medium text-rose-200">
-                  Vetorizada · Falha
+                  Vetorizada · Erro
                 </span>
               </div>
 
@@ -556,21 +692,21 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
               </div>
 
               <h3 className="text-sm font-semibold text-zinc-100">
-                Erro durante o processamento da imagem
+                Não foi possível concluir a vetorização
               </h3>
-              <p className="mt-1.5 max-w-sm text-xs leading-relaxed text-zinc-400">
-                Não foi possível concluir a leitura e o traçado vetorial deste arquivo. Verifique se
-                a imagem não está corrompida ou tente ajustar os parâmetros de sensibilidade.
+              <p className="mt-1.5 max-w-sm text-xs leading-relaxed text-zinc-300">
+                {errorMessage ??
+                  'Verifique se o arquivo de imagem está íntegro ou ajuste os parâmetros e tente novamente.'}
               </p>
 
               <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5">
                 <button
                   type="button"
-                  onClick={onRequestRevectorizeInfo}
+                  onClick={onStartVectorize}
                   className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-rose-500 transition-colors cursor-pointer"
                 >
                   <RotateCw className="h-3.5 w-3.5" />
-                  Vetorizar novamente
+                  Tentar novamente
                 </button>
 
                 <button
@@ -586,76 +722,136 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
           </div>
         )}
 
-        {/* ESTADOS 5 e 7: Resultado concluído / Arquivo pronto para download */}
-        {hasResult && comparisonMode === 'side_by_side' && (
+        {/* ESTADO 5: Resultado concluído — Comparação Lado a Lado */}
+        {hasResult && sourceImage && vectorResult && comparisonMode === 'side_by_side' && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 h-full min-h-[380px]">
             {/* Painel Original */}
             <div
-              className={`relative rounded-xl border border-zinc-800 overflow-hidden flex items-center justify-center min-h-[320px] ${bgClass}`}
+              className={`relative rounded-xl border border-zinc-800 overflow-auto flex items-center justify-center min-h-[340px] p-4 ${bgClass}`}
             >
-              <div className="absolute top-3 left-3 z-10 flex items-center gap-2">
+              <div className="absolute top-3 left-3 z-10 flex items-center gap-2 pointer-events-none">
                 <span
                   className={`rounded-md border px-2.5 py-1 text-xs font-medium backdrop-blur-xs ${badgeStyle}`}
                 >
                   Original
                 </span>
                 <span className="rounded border border-zinc-700/70 bg-zinc-900/80 px-2 py-0.5 text-[10px] font-mono text-zinc-300">
-                  Bitmap
+                  {sourceImage.format} · {sourceImage.dimensionsLabel}
                 </span>
               </div>
 
               <div
-                className="transition-transform duration-150 ease-out"
-                style={{ transform: `scale(${zoom / 100})` }}
+                onPointerMove={handleLoupePointerMove}
+                onPointerLeave={() => setLoupeCoords(null)}
+                className={`relative max-w-full max-h-[360px] transition-transform duration-150 ease-out ${
+                  detailLoupeEnabled ? 'cursor-crosshair' : ''
+                }`}
+                style={{
+                  ...aspectStyle,
+                  transform: `scale(${zoom / 100})`,
+                }}
               >
-                <IllustrativeArtwork
-                  variant="raster"
-                  customImageUrl={sourceImage?.previewUrl}
+                <img
+                  src={sourceImage.previewUrl}
+                  alt={`Original: ${sourceImage.name}`}
+                  className="w-full h-full object-contain block select-none"
+                  style={zoom >= 250 ? { imageRendering: 'pixelated' } : undefined}
+                  draggable={false}
                 />
+
+                {/* Lupa 4x sincronizada na Original */}
+                {detailLoupeEnabled && loupeCoords && (
+                  <div
+                    className={`pointer-events-none absolute z-30 h-32 w-32 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-indigo-400 shadow-2xl overflow-hidden ${bgClass}`}
+                    style={{
+                      left: `${loupeCoords.xPct}%`,
+                      top: `${loupeCoords.yPct}%`,
+                    }}
+                  >
+                    <div
+                      className="w-full h-full"
+                      style={{
+                        transform: 'scale(4)',
+                        transformOrigin: `${loupeCoords.xPct}% ${loupeCoords.yPct}%`,
+                      }}
+                    >
+                      <img
+                        src={sourceImage.previewUrl}
+                        alt=""
+                        className="w-full h-full object-contain block"
+                        style={{ imageRendering: 'pixelated' }}
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
-            {/* Painel Vetorizada */}
+            {/* Painel Vetorizada (SVG Real no DOM) */}
             <div
-              className={`relative rounded-xl border border-indigo-500/35 overflow-hidden flex items-center justify-center min-h-[320px] ${bgClass}`}
+              className={`relative rounded-xl border border-indigo-500/40 overflow-auto flex items-center justify-center min-h-[340px] p-4 ${bgClass}`}
             >
-              <div className="absolute top-3 left-3 z-10 flex flex-wrap items-center gap-2">
+              <div className="absolute top-3 left-3 z-10 flex flex-wrap items-center gap-2 pointer-events-none">
                 <span
                   className={`rounded-md border px-2.5 py-1 text-xs font-medium backdrop-blur-xs ${badgeStyle}`}
                 >
                   Vetorizada
                 </span>
-                <span className="inline-flex items-center gap-1 rounded border border-indigo-500/40 bg-indigo-950/85 px-2 py-0.5 text-[10px] font-medium text-indigo-200">
-                  <Sparkles className="h-2.5 w-2.5" />
-                  Amostra ilustrativa SVG
+                <span className="rounded border border-indigo-500/40 bg-indigo-950/85 px-2 py-0.5 text-[10px] font-mono text-indigo-200">
+                  SVG Vetorial · {vectorResult.validation.pathCount} caminhos
                 </span>
               </div>
 
-              <div className="absolute top-3 right-3 z-10">
-                <button
-                  type="button"
-                  onClick={() => setShowVectorNodes((prev) => !prev)}
-                  className="rounded-md border border-zinc-700/80 bg-zinc-900/85 px-2.5 py-1 text-[11px] font-medium text-zinc-200 hover:bg-zinc-800 transition-colors cursor-pointer"
-                >
-                  {showVectorNodes ? 'Ocultar nós' : 'Exibir nós'}
-                </button>
-              </div>
-
               <div
-                className="transition-transform duration-150 ease-out"
-                style={{ transform: `scale(${zoom / 100})` }}
+                onPointerMove={handleLoupePointerMove}
+                onPointerLeave={() => setLoupeCoords(null)}
+                className={`relative max-w-full max-h-[360px] transition-transform duration-150 ease-out ${
+                  detailLoupeEnabled ? 'cursor-crosshair' : ''
+                }`}
+                style={{
+                  ...aspectStyle,
+                  transform: `scale(${zoom / 100})`,
+                }}
               >
-                <IllustrativeArtwork variant="vector" showVectorNodes={showVectorNodes} />
+                <RealSvgViewport
+                  svgMarkup={vectorResult.svg}
+                  highlightPaths={highlightPaths}
+                />
+
+                {/* Lupa 4x sincronizada no SVG Real */}
+                {detailLoupeEnabled && loupeCoords && (
+                  <div
+                    className={`pointer-events-none absolute z-30 h-32 w-32 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-emerald-400 shadow-2xl overflow-hidden ${bgClass}`}
+                    style={{
+                      left: `${loupeCoords.xPct}%`,
+                      top: `${loupeCoords.yPct}%`,
+                    }}
+                  >
+                    <div
+                      className="w-full h-full"
+                      style={{
+                        transform: 'scale(4)',
+                        transformOrigin: `${loupeCoords.xPct}% ${loupeCoords.yPct}%`,
+                      }}
+                    >
+                      <RealSvgViewport
+                        svgMarkup={vectorResult.svg}
+                        highlightPaths={highlightPaths}
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
         )}
 
-        {/* ESTADOS 5 e 7 no modo: Controle deslizante de comparação */}
-        {hasResult && comparisonMode === 'slider' && (
+        {/* ESTADO 5: Resultado concluído — Controle Deslizante de Comparação */}
+        {hasResult && sourceImage && vectorResult && comparisonMode === 'slider' && (
           <div className="flex flex-col gap-3 h-full">
             <div
               ref={splitContainerRef}
+              data-testid="split-comparison-stage"
               onPointerDown={(event) => {
                 setIsDraggingSplit(true);
                 event.currentTarget.setPointerCapture(event.pointerId);
@@ -665,36 +861,52 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
                 if (isDraggingSplit) {
                   updateSplitFromClientX(event.clientX);
                 }
+                handleLoupePointerMove(event);
               }}
               onPointerUp={() => setIsDraggingSplit(false)}
               onPointerCancel={() => setIsDraggingSplit(false)}
+              onPointerLeave={() => setLoupeCoords(null)}
               className={`relative rounded-xl border border-zinc-800 overflow-hidden min-h-[360px] flex-1 select-none cursor-ew-resize touch-none ${bgClass}`}
             >
-              {/* Camada base: Vetorizada (lado direito) */}
-              <div className="absolute inset-0 flex items-center justify-center">
+              {/* Camada base: SVG Vetorial Real (lado direito) */}
+              <div className="absolute inset-0 flex items-center justify-center p-4">
                 <div
-                  className="transition-transform duration-150 ease-out"
-                  style={{ transform: `scale(${zoom / 100})` }}
+                  className="max-w-full max-h-[360px] w-full h-full flex items-center justify-center transition-transform duration-150 ease-out"
+                  style={{
+                    transform: `scale(${zoom / 100})`,
+                  }}
                 >
-                  <IllustrativeArtwork variant="vector" showVectorNodes={showVectorNodes} />
+                  <div className="max-w-full max-h-full" style={aspectStyle}>
+                    <RealSvgViewport
+                      svgMarkup={vectorResult.svg}
+                      highlightPaths={highlightPaths}
+                    />
+                  </div>
                 </div>
               </div>
 
-              {/* Camada superior recortada: Original (lado esquerdo) */}
+              {/* Camada superior recortada: Imagem Original (lado esquerdo) */}
               <div
-                className={`absolute inset-0 flex items-center justify-center ${bgClass}`}
+                className={`absolute inset-0 flex items-center justify-center p-4 ${bgClass}`}
                 style={{
                   clipPath: `inset(0 ${100 - sliderPosition}% 0 0)`,
                 }}
               >
                 <div
-                  className="transition-transform duration-150 ease-out"
-                  style={{ transform: `scale(${zoom / 100})` }}
+                  className="max-w-full max-h-[360px] w-full h-full flex items-center justify-center transition-transform duration-150 ease-out"
+                  style={{
+                    transform: `scale(${zoom / 100})`,
+                  }}
                 >
-                  <IllustrativeArtwork
-                    variant="raster"
-                    customImageUrl={sourceImage?.previewUrl}
-                  />
+                  <div className="max-w-full max-h-full" style={aspectStyle}>
+                    <img
+                      src={sourceImage.previewUrl}
+                      alt={`Original: ${sourceImage.name}`}
+                      className="w-full h-full object-contain block select-none"
+                      style={zoom >= 250 ? { imageRendering: 'pixelated' } : undefined}
+                      draggable={false}
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -703,18 +915,17 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
                 <span
                   className={`rounded-md border px-2.5 py-1 text-xs font-medium backdrop-blur-xs ${badgeStyle}`}
                 >
-                  Original
+                  Original ({sourceImage.format})
                 </span>
               </div>
 
               <div className="pointer-events-none absolute top-3 right-3 z-20 flex items-center gap-2">
-                <span className="inline-flex items-center gap-1 rounded border border-indigo-500/40 bg-indigo-950/85 px-2 py-1 text-[11px] font-medium text-indigo-200">
-                  <Sparkles className="h-3 w-3" />
-                  Vetorizada (Ilustrativa)
+                <span className="rounded-md border border-indigo-500/40 bg-indigo-950/85 px-2.5 py-1 text-xs font-medium text-indigo-200">
+                  SVG Vetorial ({vectorResult.validation.pathCount} caminhos)
                 </span>
               </div>
 
-              {/* Linha divisória e alça do controle deslizante */}
+              {/* Linha divisória e alça */}
               <div
                 className="pointer-events-none absolute inset-y-0 z-20 w-0.5 bg-indigo-400 shadow-[0_0_10px_rgba(99,102,241,0.8)]"
                 style={{ left: `${sliderPosition}%` }}
@@ -725,19 +936,20 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
               </div>
             </div>
 
-            {/* Controle acessível de posição do divisor */}
+            {/* Controle acessível do divisor */}
             <div className="flex items-center gap-3 rounded-lg border border-zinc-800/80 bg-zinc-950/60 px-3.5 py-2">
               <span className="text-xs font-medium text-zinc-400 shrink-0">Original</span>
               <input
                 type="range"
-                min={5}
-                max={95}
+                data-testid="split-range-input"
+                min={2}
+                max={98}
                 value={sliderPosition}
-                aria-label="Controle deslizante de comparação entre imagem original e vetorizada"
+                aria-label="Controle deslizante de comparação entre imagem original e SVG vetorizado"
                 onChange={(event) => onChangeSliderPosition(Number(event.target.value))}
                 className="studio-slider flex-1"
               />
-              <span className="text-xs font-medium text-indigo-300 shrink-0">Vetorizada</span>
+              <span className="text-xs font-medium text-indigo-300 shrink-0">SVG Vetorizado</span>
               <span className="font-mono text-[11px] text-zinc-400 w-10 text-right">
                 {sliderPosition}%
               </span>
@@ -746,34 +958,54 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
         )}
       </div>
 
-      {/* Rodapé de ações da Área de Resultados (Download SVG + Vetorizar novamente) */}
+      {/* Rodapé de ações da Área de Resultados */}
       <div className="border-t border-zinc-800/80 bg-zinc-950/70 px-4 py-3.5 sm:px-5">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div className="flex items-center gap-2 text-xs text-zinc-400">
-            {hasResult ? (
-              <span>
-                Pré-visualização ilustrativa pronta · Perfil{' '}
-                <strong className="font-medium text-zinc-200">{profileObj.label}</strong>
-              </span>
+            {hasResult && vectorResult ? (
+              hasUnappliedChanges ? (
+                <span className="text-amber-300">
+                  Parâmetros alterados · clique em <strong>Vetorizar novamente</strong> para
+                  atualizar o resultado.
+                </span>
+              ) : (
+                <span>
+                  Compatível com Inkscape e Illustrator · Proporção{' '}
+                  <strong className="font-mono text-zinc-200">
+                    {vectorResult.originalWidth}×{vectorResult.originalHeight}
+                  </strong>
+                  {vectorResult.wasDownscaled && (
+                    <span className="text-zinc-500">
+                      {' '}
+                      (otimizada em {vectorResult.workingWidth}×{vectorResult.workingHeight})
+                    </span>
+                  )}
+                </span>
+              )
             ) : isProcessing ? (
-              <span>Aguarde a conclusão das etapas de vetorização...</span>
+              <span>Processamento local assíncrono em execução...</span>
             ) : isError ? (
               <span className="text-rose-300">
-                Processamento interrompido. Tente vetorizar novamente ou envie outro arquivo.
+                Processamento interrompido. Ajuste as opções ou tente novamente.
               </span>
             ) : isInitial ? (
               <span>Nenhuma imagem selecionada no momento.</span>
             ) : (
-              <span>Imagem carregada. Configure os parâmetros e inicie a vetorização.</span>
+              <span>Imagem analisada e pronta para conversão em SVG vetorial.</span>
             )}
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5 shrink-0">
             <button
               type="button"
+              data-testid="revectorize-button"
               disabled={isInitial || isProcessing}
-              onClick={onRequestRevectorizeInfo}
-              className="inline-flex items-center gap-2 rounded-lg border border-zinc-700/90 bg-zinc-900 px-3.5 py-2 text-xs font-medium text-zinc-200 hover:bg-zinc-800 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
+              onClick={onStartVectorize}
+              className={`inline-flex items-center gap-2 rounded-lg border px-3.5 py-2 text-xs font-medium transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                hasUnappliedChanges && hasResult
+                  ? 'border-amber-500/50 bg-amber-500/15 text-amber-200 hover:bg-amber-500/25'
+                  : 'border-zinc-700/90 bg-zinc-900 text-zinc-200 hover:bg-zinc-800 hover:text-white'
+              }`}
             >
               <RotateCw className="h-3.5 w-3.5" />
               Vetorizar novamente
@@ -781,8 +1013,9 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
 
             <button
               type="button"
+              data-testid="download-svg-button"
               disabled={!hasResult}
-              onClick={onRequestDownloadInfo}
+              onClick={onDownloadSvg}
               className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-xs hover:bg-indigo-500 disabled:bg-zinc-800 disabled:text-zinc-500 disabled:cursor-not-allowed transition-colors cursor-pointer"
             >
               <Download className="h-3.5 w-3.5" />

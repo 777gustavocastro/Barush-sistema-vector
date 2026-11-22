@@ -4,7 +4,8 @@ import type {
   VectorizationPipelineResult,
   VectorizationProgressEvent,
 } from '../types';
-import { runVectorizationOnRgba } from '../vectorizers/pipelineOrchestrator';
+import { runVectorizationOnRgbaInternal } from '../vectorizers/pipelineOrchestrator';
+import type { VectorSvgCandidateInput } from '../quality/qualityEvaluator';
 
 export interface WorkerVectorizeRequest {
   type: 'vectorize';
@@ -17,7 +18,11 @@ export interface WorkerVectorizeRequest {
 
 export type WorkerVectorizeResponse =
   | { type: 'progress'; event: VectorizationProgressEvent }
-  | { type: 'success'; result: VectorizationPipelineResult }
+  | {
+      type: 'success';
+      result: VectorizationPipelineResult;
+      candidates: VectorSvgCandidateInput[];
+    }
   | { type: 'error'; message: string };
 
 const workerScope = self as unknown as {
@@ -31,7 +36,7 @@ workerScope.onmessage = async (event: MessageEvent<WorkerVectorizeRequest>) => {
 
   try {
     const rgbaData = new Uint8Array(payload.rgbaBuffer);
-    const result = await runVectorizationOnRgba(
+    const { result, candidates } = await runVectorizationOnRgbaInternal(
       {
         data: rgbaData,
         width: payload.width,
@@ -44,12 +49,12 @@ workerScope.onmessage = async (event: MessageEvent<WorkerVectorizeRequest>) => {
       }
     );
 
-    workerScope.postMessage({ type: 'success', result });
+    workerScope.postMessage({ type: 'success', result, candidates });
   } catch (err) {
     const message =
       err instanceof Error
         ? err.message
-        : 'Ocorreu uma falha inesperada durante a vetorização da imagem.';
+        : 'Ocorreu uma falha inesperada durante a reconstrução vetorial da imagem.';
     workerScope.postMessage({ type: 'error', message });
   }
 };

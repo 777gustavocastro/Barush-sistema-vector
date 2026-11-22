@@ -9,11 +9,13 @@
     "lint": "tsc -b --noEmit",
     "preview": "vite preview",
     "verify:tools": "tsx scripts/verify-vector-tools.ts",
+    "test:bird": "tsx scripts/test-winged-logo-fidelity.ts",
     "test:categories": "tsx scripts/test-all-categories.ts",
     "test:e2e": "tsx scripts/test-e2e-browser-inkscape.ts",
-    "test": "npm run verify:tools && npm run test:categories && npm run test:e2e"
+    "test": "npm run verify:tools && npm run test:bird && npm run test:categories && npm run test:e2e"
   },
   "dependencies": {
+    "@techstark/opencv-js": "^5.0.0-release.1",
     "@visioncortex/vtracer": "^1.0.0-alpha.4",
     "esm-potrace-wasm": "^0.5.1",
     "lucide-react": "^0.475.0",

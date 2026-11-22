@@ -1,8 +1,9 @@
 export type SupportedRasterFormat = 'png' | 'jpg' | 'jpeg' | 'webp';
 
-export type VectorEngineKind = 'vtracer' | 'potrace' | 'hybrid_fidelity';
-
-export type ResultOutputMode = 'editable_vector' | 'max_visual_fidelity';
+export type VectorEngineKind =
+  | 'opencv_bezier_gradients'
+  | 'vtracer_rek_gradients'
+  | 'potrace_bezier';
 
 export type EnginePresetProfile =
   | 'auto'
@@ -76,8 +77,6 @@ export interface ColorAnalysisReport {
 
 export interface VectorizationParameters extends TunedSliderValues {
   profile: EnginePresetProfile;
-  /** Modo de resultado: 'editable_vector' (caminhos/formas/gradientes 100% vetoriais) ou 'max_visual_fidelity' (fidelidade máxima, podendo gerar SVG híbrido identificado). */
-  outputMode?: ResultOutputMode;
   engine?: 'vtracer' | 'potrace' | 'auto';
   autoTune?: boolean;
   optimizeSvg?: boolean;
@@ -88,7 +87,13 @@ export interface VectorizationParameters extends TunedSliderValues {
 }
 
 export interface VectorizationProgressEvent {
-  stageId: 'analyze' | 'preprocess' | 'trace' | 'gradients_typography' | 'optimize' | 'validate';
+  stageId:
+    | 'analyze'
+    | 'segment_objects'
+    | 'reconstruct_bezier'
+    | 'gradients_typography'
+    | 'evaluate_candidates'
+    | 'validate';
   stageLabel: string;
   percent: number;
 }
@@ -102,8 +107,13 @@ export interface SvgValidationReport {
   width: number | null;
   height: number | null;
   viewBox: string | null;
+  objectCount: number;
+  groupCount: number;
   pathCount: number;
   gradientCount: number;
+  linearGradientCount: number;
+  radialGradientCount: number;
+  clipPathCount: number;
   totalVectorElements: number;
   hasEmbeddedRaster: boolean;
   byteLength: number;
@@ -118,27 +128,54 @@ export interface SvgOptimizationResult {
   preservedPathCount: number;
 }
 
-export interface QualityComparisonReport {
-  pixelSimilarityPct: number;
-  psnrDb: number;
+export interface CandidateEvaluationSummary {
+  candidateId: string;
+  label: string;
+  ssimPct: number;
+  perceptualColorPct: number;
   contourFidelityPct: number;
+  gradientContinuityPct: number;
+  compositeScore: number;
+  objectCount: number;
+  pathCount: number;
+  gradientCount: number;
+}
+
+export interface QualityComparisonReport {
+  /** Índice de Similaridade Estrutural SSIM em escala 0..100%. */
+  ssimPct: number;
+  /** Semelhança global por pixels em escala 0..100%. */
+  pixelSimilarityPct: number;
+  /** PSNR em dB. */
+  psnrDb: number;
+  /** Fidelidade estrutural de contornos (Sobel F1) em 0..100%. */
+  contourFidelityPct: number;
+  /** Fidelidade cromática perceptual baseada em CIE ΔE Lab (0..100%). */
   colorFidelityPct: number;
+  /** Diferença perceptual média de cor CIE ΔE76 no espaço Lab. */
+  meanDeltaELab: number;
+  /** Continuidade e fidelidade de transições/gradientes (0..100%). */
+  gradientContinuityPct: number;
+  /** Erro absoluto médio por canal (0..255). */
   meanAbsoluteError: number;
+  /** Candidatos avaliados durante a reconstrução e pontuação comparativa. */
+  evaluatedCandidates?: CandidateEvaluationSummary[];
 }
 
 export interface VectorizationPipelineResult {
   svg: string;
   rawSvgBeforeOptimization: string;
-  outputMode: ResultOutputMode;
-  isHybridRasterSvg: boolean;
   engineUsed: VectorEngineKind;
+  selectedCandidateLabel: string;
   adaptiveStrategyLabel: string;
+  technicalLimitationsNote?: string;
   effectiveParameters: TunedSliderValues;
   colorAnalysis: ColorAnalysisReport;
   optimization: SvgOptimizationResult | null;
   validation: SvgValidationReport;
   qualityReport?: QualityComparisonReport;
   reconstructedGradientCount: number;
+  reconstructedObjectCount: number;
   detectedTypographyCount: number;
   upscaleFactorUsed: number;
   originalWidth: number;

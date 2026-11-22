@@ -124,6 +124,7 @@ async function main() {
 
   // 1. Confirmação de versões reais instaladas
   const versions = {
+    opencv: await readInstalledPackageVersion('@techstark/opencv-js'),
     vtracer: await readInstalledPackageVersion('@visioncortex/vtracer'),
     potrace: await readInstalledPackageVersion('esm-potrace-wasm'),
     svgo: await readInstalledPackageVersion('svgo'),
@@ -132,6 +133,7 @@ async function main() {
   };
 
   console.log('1. Ferramentas e pacotes verificados:');
+  console.log(`   - @techstark/opencv-js (OpenCV local): v${versions.opencv}`);
   console.log(`   - @visioncortex/vtracer (WASM): v${versions.vtracer}`);
   console.log(`   - esm-potrace-wasm (Potrace WASM): v${versions.potrace}`);
   console.log(`   - svgo: v${versions.svgo}`);
@@ -176,7 +178,11 @@ async function main() {
       'ilustracao-colorida.png'
     );
 
-    assert(vtracerResult.engineUsed === 'vtracer', 'Motor utilizado deve ser vtracer');
+    assert(
+      vtracerResult.engineUsed === 'opencv_bezier_gradients' ||
+        vtracerResult.engineUsed === 'vtracer_rek_gradients',
+      'Motor utilizado deve ser colorido 100% vetorial'
+    );
     assert(vtracerResult.validation.valid, `SVG VTracer inválido: ${vtracerResult.validation.errors.join('; ')}`);
     assert(vtracerResult.validation.pathCount >= 3, 'VTracer deve gerar múltiplos caminhos coloridos');
     assert(!vtracerResult.validation.hasEmbeddedRaster, 'SVG não pode conter imagem raster embutida');
@@ -220,7 +226,7 @@ async function main() {
     );
 
     assert(potraceResult.colorAnalysis.isMonochromeCandidate, 'Deve detectar candidato monocromático');
-    assert(potraceResult.engineUsed === 'potrace', 'Roteamento automático deve selecionar potrace');
+    assert(potraceResult.engineUsed === 'potrace_bezier', 'Roteamento automático deve selecionar potrace_bezier');
     assert(potraceResult.validation.valid, `SVG Potrace inválido: ${potraceResult.validation.errors.join('; ')}`);
     assert(potraceResult.validation.pathCount >= 1, 'Potrace deve gerar ao menos 1 caminho vetorial');
     assert(!potraceResult.validation.hasEmbeddedRaster, 'SVG Potrace não pode conter imagem embutida');

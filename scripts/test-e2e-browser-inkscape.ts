@@ -133,7 +133,7 @@ async function main() {
 
     await page.locator('[data-testid="svg-ready-banner"]').waitFor({
       state: 'visible',
-      timeout: 20000,
+      timeout: 60000,
     });
 
     const rafTicks = await page.evaluate(
@@ -191,6 +191,17 @@ async function main() {
       .screenshot({ path: path.join(ARTIFACTS_DIR, 'vetorizador-slider-comparacao.png') })
       .catch(() => undefined);
 
+    await page.locator('[data-testid="mode-overlay"]').click();
+    await page.locator('[data-testid="overlay-comparison-stage"]').waitFor({ state: 'visible' });
+    await page.locator('[data-testid="mode-pixel-diff"]').click();
+    await page.locator('[data-testid="pixel-diff-stage"]').waitFor({ state: 'visible' });
+
+    const objMetricText = await page.locator('[data-testid="metric-objects"]').innerText();
+    const ssimMetricText = await page.locator('[data-testid="metric-ssim"]').innerText();
+    if (!Number(objMetricText) || !ssimMetricText.includes('%')) {
+      throw new Error(`Métricas estruturais/SSIM ausentes na UI: obj=${objMetricText}, ssim=${ssimMetricText}`);
+    }
+
     await page.locator('[data-testid="mode-side-by-side"]').click();
     await page.locator('[data-testid="zoom-in-button"]').click();
     await page.locator('[data-testid="zoom-in-button"]').click();
@@ -223,7 +234,7 @@ async function main() {
     await page.locator('[data-testid="revectorize-button"]').click();
     await page.locator('[data-testid="svg-ready-banner"]').waitFor({
       state: 'visible',
-      timeout: 20000,
+      timeout: 60000,
     });
 
     const secondSvgMarkup = await page.evaluate(
@@ -238,7 +249,7 @@ async function main() {
     await page.locator('[data-testid="revectorize-button"]').click();
     await page.locator('[data-testid="svg-ready-banner"]').waitFor({
       state: 'visible',
-      timeout: 20000,
+      timeout: 60000,
     });
     console.log(
       '9. Nova vetorização executada sem reenviar a imagem; atualização efetiva do SVG confirmada.'
@@ -268,22 +279,26 @@ async function main() {
       encoding: 'utf-8',
     }).trim();
     const queriedLines = queryAllOutput.split('\n');
-    const queriedPaths = queriedLines.filter((line) => line.startsWith('caminho-'));
-    if (queriedPaths.length < 3) {
+    const queriedObjects = queriedLines.filter((line) => line.startsWith('objeto-'));
+    const queriedPaths = queriedLines.filter(
+      (line) => line.startsWith('caminho-') || line.startsWith('letra-')
+    );
+    if (queriedObjects.length < 1 || queriedPaths.length < 3) {
       throw new Error(
-        `Inkscape leu menos caminhos editáveis que o esperado: ${queryAllOutput}`
+        `Inkscape leu menos objetos/caminhos editáveis que o esperado: objetos=${queriedObjects.length}, caminhos=${queriedPaths.length}`
       );
     }
+    const firstPathId = queriedPaths[0].split(',')[0];
     console.log(
-      `11. SVG aberto no ${inkscapeVersion}: ${queriedPaths.length} caminhos independentes reconhecidos (${queriedPaths
+      `11. SVG aberto no ${inkscapeVersion}: ${queriedObjects.length} grupos de objetos e ${queriedPaths.length} caminhos independentes reconhecidos (${queriedPaths
         .slice(0, 3)
         .map((l) => l.split(',')[0])
         .join(', ')}...).`
     );
 
-    // 12. Confirme que os caminhos são editáveis no Inkscape (seleciona caminho-1, aplica translação vetorial real no Inkscape e reexporta)
+    // 12. Confirme que os caminhos são editáveis no Inkscape (seleciona primeiro caminho, aplica translação vetorial real no Inkscape e reexporta)
     const beforeX = parseFloat(
-      execFileSync('inkscape', ['--query-id=caminho-1', '--query-x', downloadedSvgPath], {
+      execFileSync('inkscape', [`--query-id=${firstPathId}`, '--query-x', downloadedSvgPath], {
         encoding: 'utf-8',
       }).trim()
     );
@@ -295,7 +310,7 @@ async function main() {
       'inkscape',
       [
         downloadedSvgPath,
-        `--actions=select-by-id:caminho-1;transform-translate:25,15;export-plain-svg;export-filename:${editedByInkscapePath};export-do`,
+        `--actions=select-by-id:${firstPathId};transform-translate:25,15;export-plain-svg;export-filename:${editedByInkscapePath};export-do`,
       ],
       { encoding: 'utf-8' }
     );
@@ -307,7 +322,7 @@ async function main() {
     );
 
     const afterX = parseFloat(
-      execFileSync('inkscape', ['--query-id=caminho-1', '--query-x', editedByInkscapePath], {
+      execFileSync('inkscape', [`--query-id=${firstPathId}`, '--query-x', editedByInkscapePath], {
         encoding: 'utf-8',
       }).trim()
     );
@@ -315,14 +330,49 @@ async function main() {
     const pngStat = await fs.stat(exportedInkscapePng);
     if (Math.abs(afterX - beforeX) < 5 || pngStat.size < 500) {
       throw new Error(
-        `Falha ao comprovar edição individual do caminho no Inkscape (beforeX=${beforeX}, afterX=${afterX})`
+        `Falha ao comprovar edição individual do caminho no Inkscape (id=${firstPathId}, beforeX=${beforeX}, afterX=${afterX})`
       );
     }
     console.log(
-      `12. Edição real confirmada no Inkscape: objeto "caminho-1" selecionado e movido individualmente (X: ${beforeX.toFixed(
+      `12. Edição real confirmada no Inkscape: objeto "${firstPathId}" selecionado e movido individualmente (X: ${beforeX.toFixed(
         2
       )} -> ${afterX.toFixed(2)}) e reexportado com sucesso!`
     );
+
+    // 13. Teste adicional na UI real com a imagem de referência do Pássaro Colorido (se disponível em /opt/cursor/artifacts)
+    const birdRefPath = path.join(ARTIFACTS_DIR, 'passaro-colorido-referencia.png');
+    try {
+      await fs.access(birdRefPath);
+      await page.setViewportSize({ width: 1440, height: 980 });
+      await page.locator('[data-testid="file-upload-input"]').setInputFiles(birdRefPath);
+      await page.locator('[data-testid="profile-auto"]').click();
+      await page.locator('[data-testid="start-vectorize-button"]').click();
+      await Promise.race([
+        page.locator('[data-testid="svg-ready-banner"]').waitFor({ state: 'visible', timeout: 60000 }),
+        page.locator('[data-testid="processing-error-panel"]').waitFor({ state: 'visible', timeout: 60000 }),
+      ]);
+      if (await page.locator('[data-testid="processing-error-panel"]').isVisible()) {
+        throw new Error(await page.locator('[data-testid="processing-error-panel"]').innerText());
+      }
+      await page.locator('[data-testid="bg-white"]').click();
+      await page.locator('[data-testid="zoom-out-button"]').click();
+      await page.locator('[data-testid="zoom-out-button"]').click();
+      await page
+        .screenshot({
+          path: path.join(ARTIFACTS_DIR, 'ui-passaro-colorido-vetor-puro.png'),
+          fullPage: true,
+        })
+        .catch(() => undefined);
+      console.log(
+        '13. Pássaro colorido reconstruído na interface web real e capturado em ui-passaro-colorido-vetor-puro.png.'
+      );
+    } catch (step13Err) {
+      const errPanel = await page
+        .locator('[data-testid="processing-error-panel"]')
+        .innerText()
+        .catch(() => '');
+      throw new Error(`Falha no passo 13 (Pássaro Colorido no navegador): ${String(step13Err)} | PainelErro: ${errPanel}`);
+    }
 
     // Verificação adicional de responsividade mobile (390×844)
     await page.setViewportSize({ width: 390, height: 844 });

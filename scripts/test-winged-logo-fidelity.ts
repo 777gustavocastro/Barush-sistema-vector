@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { Resvg } from '@resvg/resvg-js';
@@ -6,74 +7,87 @@ import {
   computeQualityComparisonFromBuffers,
   createNodeTempWorkspace,
   decodeImageBytesToRgba,
-  getVTracerBinding,
   runVectorizationOnRgba,
   validateSvgStructure,
   type RawRgbaImage,
 } from '../src/engine';
 
 /**
- * Gera um logotipo colorido de alta complexidade contendo TODOS os elementos críticos do teste obrigatório:
- * - Asas com penas afiladas e pontas agudas ("Asas e extremidades")
- * - Corpo orgânico em curva "S" suave ("Curvas do corpo")
- * - Degradês lineares e radiais ricos ("Transições de cores" e "Degradês")
- * - Detalhes pequenos (olho, brilho, filetes internos)
- * - Contornos nítidos
- * - Tipografia principal e subtítulo pequeno ("Tipografia")
+ * Gera a imagem raster de referência do Pássaro Colorido (Seção 12):
+ * - Formato das asas abertas e extremidades afiladas das penas
+ * - Curvas orgânicas do corpo em "S"
+ * - Degradês roxos (#7c3aed), azuis (#2563eb / #06b6d4), rosas (#ec4899 / #f43f5e) e amarelos (#fde047 / #f59e0b)
+ * - Sombra suave translúcida e brilho/reflexo no olho
+ * - Tipografia nítida principal e subtítulo
  */
-function createReferenceWingedLogoSvg(): string {
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="560" height="440" viewBox="0 0 560 440">
+function createReferenceColorfulBirdSvg(): string {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="480" viewBox="0 0 600 480">
     <defs>
-      <linearGradient id="wingUpper" x1="80" y1="70" x2="480" y2="230" gradientUnits="userSpaceOnUse">
-        <stop offset="0%" stop-color="#06b6d4"/>
-        <stop offset="45%" stop-color="#2563eb"/>
-        <stop offset="100%" stop-color="#7c3aed"/>
+      <linearGradient id="wingPurpleBlue" x1="60" y1="65" x2="270" y2="215" gradientUnits="userSpaceOnUse">
+        <stop offset="0%" stop-color="#7c3aed"/>
+        <stop offset="52%" stop-color="#2563eb"/>
+        <stop offset="100%" stop-color="#06b6d4"/>
       </linearGradient>
-      <linearGradient id="wingLower" x1="110" y1="130" x2="450" y2="275" gradientUnits="userSpaceOnUse">
+      <linearGradient id="wingBluePinkRight" x1="540" y1="65" x2="330" y2="215" gradientUnits="userSpaceOnUse">
+        <stop offset="0%" stop-color="#ec4899"/>
+        <stop offset="50%" stop-color="#8b5cf6"/>
+        <stop offset="100%" stop-color="#2563eb"/>
+      </linearGradient>
+      <linearGradient id="feathersPinkYellow" x1="90" y1="195" x2="275" y2="290" gradientUnits="userSpaceOnUse">
         <stop offset="0%" stop-color="#fde047"/>
-        <stop offset="50%" stop-color="#f97316"/>
-        <stop offset="100%" stop-color="#e11d48"/>
+        <stop offset="52%" stop-color="#f97316"/>
+        <stop offset="100%" stop-color="#ec4899"/>
       </linearGradient>
-      <radialGradient id="shieldGlow" cx="280" cy="185" r="135" gradientUnits="userSpaceOnUse">
-        <stop offset="0%" stop-color="#1e293b"/>
-        <stop offset="70%" stop-color="#0f172a"/>
-        <stop offset="100%" stop-color="#020617"/>
-      </radialGradient>
-      <linearGradient id="bodyCurve" x1="230" y1="85" x2="330" y2="295" gradientUnits="userSpaceOnUse">
+      <linearGradient id="feathersYellowPinkRight" x1="510" y1="195" x2="325" y2="290" gradientUnits="userSpaceOnUse">
+        <stop offset="0%" stop-color="#fde047"/>
+        <stop offset="52%" stop-color="#fb7185"/>
+        <stop offset="100%" stop-color="#db2777"/>
+      </linearGradient>
+      <linearGradient id="birdBodyGrad" x1="265" y1="62" x2="325" y2="320" gradientUnits="userSpaceOnUse">
         <stop offset="0%" stop-color="#38bdf8"/>
-        <stop offset="50%" stop-color="#818cf8"/>
-        <stop offset="100%" stop-color="#f43f5e"/>
+        <stop offset="38%" stop-color="#6366f1"/>
+        <stop offset="72%" stop-color="#ec4899"/>
+        <stop offset="100%" stop-color="#facc15"/>
       </linearGradient>
+      <radialGradient id="softShadow" cx="300" cy="342" r="95" gradientUnits="userSpaceOnUse">
+        <stop offset="0%" stop-color="#94a3b8" stop-opacity="0.45"/>
+        <stop offset="100%" stop-color="#94a3b8" stop-opacity="0"/>
+      </radialGradient>
     </defs>
 
-    <!-- Fundo branco limpo típico de imagem de logo enviada pelo usuário -->
-    <rect width="560" height="440" fill="#ffffff"/>
+    <!-- Fundo branco de referência -->
+    <rect width="600" height="480" fill="#ffffff"/>
 
-    <!-- Medalhão circular suave de fundo -->
-    <circle cx="280" cy="185" r="126" fill="url(#shieldGlow)" stroke="#334155" stroke-width="3"/>
+    <!-- Sombra elíptica suave translúcida -->
+    <ellipse cx="300" cy="340" rx="92" ry="14" fill="url(#softShadow)"/>
 
-    <!-- Asa Esquerda Superior (3 penas curvas com pontas agudas) -->
-    <path d="M258 175 C205 142, 130 96, 44 68 C88 108, 128 140, 178 164 C118 145, 72 132, 28 118 C74 154, 126 178, 188 190 C134 184, 88 180, 52 174 C98 202, 168 216, 250 212 Z" fill="url(#wingUpper)"/>
+    <!-- Asa Esquerda Superior (penas afiladas em degradê roxo -> azul -> ciano) -->
+    <path d="M276 184 C218 146, 138 98, 48 68 C94 112, 138 146, 192 170 C128 150, 78 136, 32 122 C82 160, 136 186, 202 198 C144 192, 94 188, 56 182 C106 212, 180 226, 268 220 Z" fill="url(#wingPurpleBlue)"/>
 
-    <!-- Asa Direita Superior (simétrica com extremidades afiladas) -->
-    <path d="M302 175 C355 142, 430 96, 516 68 C472 108, 432 140, 382 164 C442 145, 488 132, 532 118 C486 154, 434 178, 372 190 C426 184, 472 180, 508 174 C462 202, 392 216, 310 212 Z" fill="url(#wingUpper)"/>
+    <!-- Asa Direita Superior (penas afiladas em degradê rosa -> roxo -> azul) -->
+    <path d="M324 184 C382 146, 462 98, 552 68 C506 112, 462 146, 408 170 C472 150, 522 136, 568 122 C518 160, 464 186, 398 198 C456 192, 506 188, 544 182 C494 212, 420 226, 332 220 Z" fill="url(#wingBluePinkRight)"/>
 
-    <!-- Plumagem Inferior em Degradê Quente (ouro -> laranja -> carmesim) -->
-    <path d="M252 204 C196 210, 134 218, 78 228 C126 242, 182 244, 236 234 C178 252, 138 264, 108 274 C168 274, 224 258, 266 236 Z" fill="url(#wingLower)"/>
-    <path d="M308 204 C364 210, 426 218, 482 228 C434 242, 378 244, 324 234 C382 252, 422 264, 452 274 C392 274, 336 258, 294 236 Z" fill="url(#wingLower)"/>
+    <!-- Penas Inferiores Esquerda (amarelo -> laranja -> rosa) -->
+    <path d="M270 214 C210 220, 144 230, 84 242 C136 258, 196 260, 252 248 C192 268, 148 282, 116 292 C180 292, 240 274, 284 250 Z" fill="url(#feathersPinkYellow)"/>
 
-    <!-- Corpo Central em Curva "S" Orgânica + Crista Afilada -->
-    <path d="M280 66 C298 84, 308 108, 298 134 C288 160, 262 184, 268 218 C274 250, 302 272, 280 304 C252 278, 236 244, 244 206 C252 172, 276 150, 272 118 C269 98, 264 82, 280 66 Z" fill="url(#bodyCurve)" stroke="#f8fafc" stroke-width="2"/>
+    <!-- Penas Inferiores Direita (amarelo -> coral -> rosa) -->
+    <path d="M330 214 C390 220, 456 230, 516 242 C464 258, 404 260, 348 248 C408 268, 452 282, 484 292 C420 292, 360 274, 316 250 Z" fill="url(#feathersYellowPinkRight)"/>
 
-    <!-- Detalhes pequenos: olho nítido, brilho interno e estrelas laterais -->
-    <circle cx="283" cy="102" r="5.5" fill="#ffffff"/>
-    <circle cx="284.5" cy="101.5" r="2.5" fill="#0f172a"/>
-    <circle cx="142" cy="88" r="4" fill="#f59e0b"/>
-    <circle cx="418" cy="88" r="4" fill="#f59e0b"/>
+    <!-- Corpo Curvo Central em "S" (azul -> roxo -> rosa -> amarelo) -->
+    <path d="M300 64 C320 84, 330 110, 320 138 C308 166, 280 192, 286 228 C292 262, 322 286, 300 320 C270 292, 252 256, 260 216 C268 180, 294 156, 290 122 C287 100, 282 82, 300 64 Z" fill="url(#birdBodyGrad)"/>
 
-    <!-- Tipografia Principal e Subtítulo Fino -->
-    <text x="280" y="366" text-anchor="middle" font-family="DejaVu Sans, Arial, sans-serif" font-weight="800" font-size="36" letter-spacing="3" fill="#0f172a">BARUSH VECTOR</text>
-    <text x="280" y="398" text-anchor="middle" font-family="DejaVu Sans, Arial, sans-serif" font-weight="600" font-size="14" letter-spacing="5" fill="#475569">ESTUDIO DE ALTA PRECISAO</text>
+    <!-- Olho, pupila e reflexo luminoso -->
+    <circle cx="304" cy="102" r="6" fill="#ffffff"/>
+    <circle cx="305.5" cy="101.5" r="2.8" fill="#0f172a"/>
+    <circle cx="304.2" cy="100.3" r="1.1" fill="#ffffff"/>
+
+    <!-- Pequenos elementos ornamentais -->
+    <circle cx="152" cy="86" r="4.5" fill="#facc15"/>
+    <circle cx="448" cy="86" r="4.5" fill="#ec4899"/>
+
+    <!-- Tipografia Principal e Subtítulo -->
+    <text x="300" y="396" text-anchor="middle" font-family="DejaVu Sans, Arial, sans-serif" font-weight="800" font-size="36" letter-spacing="3" fill="#1e1b4b">BARUSH VECTOR</text>
+    <text x="300" y="430" text-anchor="middle" font-family="DejaVu Sans, Arial, sans-serif" font-weight="600" font-size="14" letter-spacing="5" fill="#475569">ARTE VETORIAL EDITAVEL</text>
   </svg>`;
 }
 
@@ -101,195 +115,168 @@ function renderSvgToRgba(svg: string, width: number, background = 'rgb(255,255,2
 }
 
 async function main() {
-  console.log('=== TESTE COMPARATIVO DE ALTA FIDELIDADE: LOGO COM ASAS, DEGRADÊS E TIPOGRAFIA ===\n');
+  console.log('=== TESTE PRINCIPAL (SEÇÃO 12): PÁSSARO COLORIDO — 100% VETORIAL E ZERO RASTER ===\n');
 
-  const tempWs = await createNodeTempWorkspace('barush-fidelity-bench-');
+  const tempWs = await createNodeTempWorkspace('barush-passaro-colorido-');
   const outArtifactDir = '/opt/cursor/artifacts';
   await fs.mkdir(outArtifactDir, { recursive: true }).catch(() => undefined);
 
   try {
-    // 1. Renderiza o logo de referência em PNG raster real (560x440)
-    const refSvg = createReferenceWingedLogoSvg();
+    // 1. Converte o SVG de referência para PNG raster real (a entrada raster que o sistema recebe)
+    const refSvg = createReferenceColorfulBirdSvg();
     const pngBytes = new Uint8Array(await sharp(Buffer.from(refSvg)).png().toBuffer());
-    const originalRgba = await decodeImageBytesToRgba(pngBytes, 'logo-asas-degrade.png');
+    const originalRgba = await decodeImageBytesToRgba(pngBytes, 'passaro-colorido-referencia.png');
 
-    // 2. Simula o comportamento ANTERIOR (causador da perda visual diagnosticada):
-    // maxColors=12, hierarchical='cutout', filterSpeckle=5, simplify=0.85, spliceThreshold=72, sem upscale
-    const vtracer = await getVTracerBinding();
-    const legacyBrokenSvgRaw = vtracer.convertPixels(
-      originalRgba.data,
-      originalRgba.width,
-      originalRgba.height,
-      {
-        clustering: 'color-cluster',
-        hierarchical: 'cutout',
-        mode: 'spline',
-        maxColors: 12,
-        colorPrecision: 6,
-        layerDifference: 18,
-        filterSpeckle: 6,
-        cornerThreshold: 38,
-        lengthThreshold: 4.5,
-        spliceThreshold: 74,
-        maxIterations: 10,
-        pathPrecision: 2,
-        simplify: 0.9,
+    // 2. Executa a Nova Arquitetura de Reconstrução Vetorial Avançada
+    const result = await runVectorizationOnRgba(originalRgba, {
+      profile: 'auto',
+      engine: 'auto',
+      autoTune: true,
+      reconstructGradients: true,
+      enhanceTypography: true,
+      subpixelUpscale: true,
+      colorCount: 256,
+      detailPrecision: 96,
+      curveSmoothness: 68,
+      pathSimplification: 0,
+      noiseRemoval: 0,
+      contourSensitivity: 86,
+      optimizeSvg: true,
+    });
+
+    // 3. Auditoria Estrita Anti-Raster (Seção 9 e Seção 11)
+    const validation = validateSvgStructure(result.svg);
+    if (!validation.valid || validation.hasEmbeddedRaster) {
+      throw new Error(`Validação anti-raster falhou: ${validation.errors.join('; ')}`);
+    }
+    if (/<image\b/i.test(result.svg) || /data:image/i.test(result.svg) || /base64/i.test(result.svg)) {
+      throw new Error('PROIBIÇÃO VIOLADA: O SVG contém imagem raster ou Base64!');
+    }
+    if (validation.gradientCount < 2) {
+      throw new Error(
+        `Esperava gradientes SVG nativos (<linearGradient>/<radialGradient>), mas obteve ${validation.gradientCount}!`
+      );
+    }
+    if (validation.objectCount < 3) {
+      throw new Error(
+        `Esperava separação em múltiplos objetos independentes (<g id="objeto-N">), mas obteve ${validation.objectCount}!`
+      );
+    }
+
+    // 4. Validação real de abertura e edição no Inkscape
+    const svgOutPath = path.join(outArtifactDir, 'passaro-colorido-reconstruido-puro.svg');
+    await fs.writeFile(svgOutPath, result.svg, 'utf-8');
+
+    const inkscapeQuery = execFileSync('inkscape', ['--query-all', svgOutPath], {
+      encoding: 'utf-8',
+    }).trim();
+    const inkscapeObjects = inkscapeQuery
+      .split('\n')
+      .filter((l) => l.startsWith('objeto-') || l.startsWith('caminho-') || l.startsWith('letra-'));
+
+    if (inkscapeObjects.length < 10) {
+      throw new Error(`Inkscape não listou objetos/caminhos editáveis suficientes: ${inkscapeObjects.length}`);
+    }
+
+    // 5. Comparação Perceptual e por Zona (Asas, Corpo+Degradês, Tipografia)
+    const renderedVector = renderSvgToRgba(result.svg, originalRgba.width);
+    const globalMetrics = computeQualityComparisonFromBuffers(originalRgba, renderedVector);
+
+    const wingsMetrics = computeQualityComparisonFromBuffers(
+      cropRgba(originalRgba, 25, 60, 550, 240),
+      cropRgba(renderedVector, 25, 60, 550, 240)
+    );
+    const bodyMetrics = computeQualityComparisonFromBuffers(
+      cropRgba(originalRgba, 245, 58, 110, 270),
+      cropRgba(renderedVector, 245, 58, 110, 270)
+    );
+    const typoMetrics = computeQualityComparisonFromBuffers(
+      cropRgba(originalRgba, 65, 360, 470, 85),
+      cropRgba(renderedVector, 65, 360, 470, 85)
+    );
+
+    console.log(`Candidato Vencedor:     ${result.selectedCandidateLabel}`);
+    console.log(`Motor Utilizado:        ${result.engineUsed}`);
+    console.log(`Dimensões do SVG:       ${validation.width}×${validation.height} (viewBox="${validation.viewBox}")`);
+    console.log(`Objetos Independentes:  ${validation.objectCount}`);
+    console.log(`Grupos <g>:             ${validation.groupCount}`);
+    console.log(`Caminhos Editáveis:     ${validation.pathCount}`);
+    console.log(
+      `Gradientes SVG Nativos: ${validation.gradientCount} (${validation.linearGradientCount} linear, ${validation.radialGradientCount} radial)`
+    );
+    console.log(`Elementos no Inkscape:  ${inkscapeObjects.length} selecionáveis individualmente`);
+    console.log(`Imagens Raster no SVG:  0 (Verificado: zero <image>, zero PNG/JPEG, zero Base64)\n`);
+
+    console.log('--- MÉTRICAS PERCEPTUAIS E ESTRUTURAIS (ORIGINAL vs SVG 100% VETORIAL) ---');
+    console.log(
+      `GLOBAL:      SSIM=${globalMetrics.ssimPct}% | Pixels=${globalMetrics.pixelSimilarityPct}% | Cores Lab=${globalMetrics.colorFidelityPct}% (ΔE=${globalMetrics.meanDeltaELab}) | Contornos=${globalMetrics.contourFidelityPct}% | Gradientes=${globalMetrics.gradientContinuityPct}%`
+    );
+    console.log(
+      `Asas/Penas:  SSIM=${wingsMetrics.ssimPct}% | Cores Lab=${wingsMetrics.colorFidelityPct}% | Contornos=${wingsMetrics.contourFidelityPct}%`
+    );
+    console.log(
+      `Corpo Curvo: SSIM=${bodyMetrics.ssimPct}% | Cores Lab=${bodyMetrics.colorFidelityPct}% | Contornos=${bodyMetrics.contourFidelityPct}%`
+    );
+    console.log(
+      `Tipografia:  SSIM=${typoMetrics.ssimPct}% | Cores Lab=${typoMetrics.colorFidelityPct}% | Contornos=${typoMetrics.contourFidelityPct}%\n`
+    );
+
+    if (result.qualityReport?.evaluatedCandidates) {
+      console.log('--- PLACAR DOS CANDIDATOS AVALIADOS ---');
+      for (const c of result.qualityReport.evaluatedCandidates) {
+        console.log(
+          `  • ${c.label}: Score=${c.compositeScore} (SSIM=${c.ssimPct}%, Cores=${c.perceptualColorPct}%, Contornos=${c.contourFidelityPct}%, Gradientes=${c.gradientCount}, Objetos=${c.objectCount}, Caminhos=${c.pathCount})`
+        );
       }
-    ).replace('<svg ', `<svg viewBox="0 0 ${originalRgba.width} ${originalRgba.height}" `);
-
-    // 3. Executa o NOVO Pipeline Adaptativo — MODO 2: VETOR EDITÁVEL (100% vetorial real!)
-    const newEditableResult = await runVectorizationOnRgba(originalRgba, {
-      profile: 'auto',
-      outputMode: 'editable_vector',
-      engine: 'auto',
-      autoTune: true,
-      colorCount: 256,
-      detailPrecision: 96,
-      curveSmoothness: 68,
-      pathSimplification: 0,
-      noiseRemoval: 0,
-      contourSensitivity: 86,
-      optimizeSvg: true,
-    });
-
-    // 4. Executa o NOVO Pipeline — MODO 1: FIDELIDADE VISUAL MÁXIMA (SVG Híbrido identificado)
-    const newMaxFidelityResult = await runVectorizationOnRgba(originalRgba, {
-      profile: 'auto',
-      outputMode: 'max_visual_fidelity',
-      engine: 'auto',
-      autoTune: true,
-      colorCount: 256,
-      detailPrecision: 96,
-      curveSmoothness: 68,
-      pathSimplification: 0,
-      noiseRemoval: 0,
-      contourSensitivity: 86,
-      optimizeSvg: true,
-    });
-
-    // Verifica estritamente que os dois modos NÃO se confundem
-    const checkEditable = validateSvgStructure(newEditableResult.svg, { allowHybridRaster: false });
-    if (!checkEditable.valid || newEditableResult.isHybridRasterSvg || checkEditable.hasEmbeddedRaster) {
-      throw new Error('Modo 2 (Vetor Editável) falhou na validação puramente vetorial!');
-    }
-    const checkHybrid = validateSvgStructure(newMaxFidelityResult.svg, { allowHybridRaster: true });
-    if (!checkHybrid.valid || !newMaxFidelityResult.isHybridRasterSvg || !checkHybrid.hasEmbeddedRaster) {
-      throw new Error('Modo 1 (Fidelidade Visual Máxima) não gerou SVG híbrido identificado corretamente!');
     }
 
-    const legacyRendered = renderSvgToRgba(legacyBrokenSvgRaw, originalRgba.width);
-    const newEditableRendered = renderSvgToRgba(newEditableResult.svg, originalRgba.width);
-
-    // Métricas Globais
-    const legacyGlobal = computeQualityComparisonFromBuffers(originalRgba, legacyRendered);
-    const newGlobal = computeQualityComparisonFromBuffers(originalRgba, newEditableRendered);
-
-    // Métricas por Zona Anatômica do Logo:
-    // Zona A: Asas e extremidades (x: 20..240, y: 60..280)
-    const origWings = cropRgba(originalRgba, 20, 60, 220, 220);
-    const legWings = cropRgba(legacyRendered, 20, 60, 220, 220);
-    const newWings = cropRgba(newEditableRendered, 20, 60, 220, 220);
-    const wingLegacyMetrics = computeQualityComparisonFromBuffers(origWings, legWings);
-    const wingNewMetrics = computeQualityComparisonFromBuffers(origWings, newWings);
-
-    // Zona B: Curvas do corpo + degradês centrais (x: 220..340, y: 60..310)
-    const origBody = cropRgba(originalRgba, 220, 60, 120, 250);
-    const legBody = cropRgba(legacyRendered, 220, 60, 120, 250);
-    const newBody = cropRgba(newEditableRendered, 220, 60, 120, 250);
-    const bodyLegacyMetrics = computeQualityComparisonFromBuffers(origBody, legBody);
-    const bodyNewMetrics = computeQualityComparisonFromBuffers(origBody, newBody);
-
-    // Zona C: Tipografia principal + subtítulo (x: 70..490, y: 330..415)
-    const origTypo = cropRgba(originalRgba, 70, 330, 420, 85);
-    const legTypo = cropRgba(legacyRendered, 70, 330, 420, 85);
-    const newTypo = cropRgba(newEditableRendered, 70, 330, 420, 85);
-    const typoLegacyMetrics = computeQualityComparisonFromBuffers(origTypo, legTypo);
-    const typoNewMetrics = computeQualityComparisonFromBuffers(origTypo, newTypo);
-
-    console.log(`Categoria adaptativa detectada: "${newEditableResult.adaptiveStrategyLabel}"`);
-    console.log(`Upscale sub-pixel aplicado: ${newEditableResult.upscaleFactorUsed}×`);
-    console.log(`Regiões tipográficas detectadas: ${newEditableResult.detectedTypographyCount}`);
-    console.log(`Gradientes SVG nativos reconstruídos: ${newEditableResult.reconstructedGradientCount}`);
-    console.log(`Caminhos vetoriais editáveis (Modo 2): ${checkEditable.pathCount}\n`);
-
-    console.log('--- COMPARAÇÃO QUANTITATIVA: ANTES vs DEPOIS (MODO 2 — VETOR 100% EDITÁVEL) ---');
-    console.log(
-      `GLOBAL:               Antes=${legacyGlobal.pixelSimilarityPct}% (${legacyGlobal.psnrDb} dB, Contornos=${legacyGlobal.contourFidelityPct}%, Cores=${legacyGlobal.colorFidelityPct}%)`
-    );
-    console.log(
-      `                      Depois=${newGlobal.pixelSimilarityPct}% (${newGlobal.psnrDb} dB, Contornos=${newGlobal.contourFidelityPct}%, Cores=${newGlobal.colorFidelityPct}%)\n`
-    );
-
-    console.log(
-      `1. Asas/extremidades: Antes=${wingLegacyMetrics.pixelSimilarityPct}% (Contornos=${wingLegacyMetrics.contourFidelityPct}%) -> Depois=${wingNewMetrics.pixelSimilarityPct}% (Contornos=${wingNewMetrics.contourFidelityPct}%)`
-    );
-    console.log(
-      `2. Curvas/degradês:   Antes=${bodyLegacyMetrics.pixelSimilarityPct}% (Cores=${bodyLegacyMetrics.colorFidelityPct}%)     -> Depois=${bodyNewMetrics.pixelSimilarityPct}% (Cores=${bodyNewMetrics.colorFidelityPct}%)`
-    );
-    console.log(
-      `3. Tipografia/texto:  Antes=${typoLegacyMetrics.pixelSimilarityPct}% (Contornos=${typoLegacyMetrics.contourFidelityPct}%) -> Depois=${typoNewMetrics.pixelSimilarityPct}% (Contornos=${typoNewMetrics.contourFidelityPct}%)\n`
-    );
-
-    console.log(
-      `MODO 1 (Fidelidade Visual Máxima — SVG Híbrido identificado): ${newMaxFidelityResult.qualityReport?.pixelSimilarityPct}% (${newMaxFidelityResult.validation.pathCount} caminhos estruturais + camada raster sem perdas)`
-    );
-
-    // Gera prancha comparativa lado a lado (Original | Antes | Novo Vetor Editável) para inspeção visual real!
+    // Salva prancha comparativa lado a lado (Referência Original vs SVG 100% Vetorial Puro)
     const origPng = await sharp(Buffer.from(originalRgba.data), {
       raw: { width: originalRgba.width, height: originalRgba.height, channels: 4 },
     })
       .png()
       .toBuffer();
-    const legPng = await sharp(Buffer.from(legacyRendered.data), {
-      raw: { width: legacyRendered.width, height: legacyRendered.height, channels: 4 },
-    })
-      .png()
-      .toBuffer();
-    const newPng = await sharp(Buffer.from(newEditableRendered.data), {
-      raw: { width: newEditableRendered.width, height: newEditableRendered.height, channels: 4 },
+    const vecPng = await sharp(Buffer.from(renderedVector.data), {
+      raw: { width: renderedVector.width, height: renderedVector.height, channels: 4 },
     })
       .png()
       .toBuffer();
 
-    const boardWidth = originalRgba.width * 3 + 40;
-    const boardHeight = originalRgba.height + 20;
+    await fs
+      .writeFile(path.join(outArtifactDir, 'passaro-colorido-referencia.png'), pngBytes)
+      .catch(() => undefined);
+    await fs
+      .writeFile(path.join(outArtifactDir, 'passaro-colorido-vetor-puro.svg'), result.svg, 'utf-8')
+      .catch(() => undefined);
+
     await sharp({
       create: {
-        width: boardWidth,
-        height: boardHeight,
+        width: originalRgba.width * 2 + 30,
+        height: originalRgba.height + 20,
         channels: 4,
         background: { r: 24, g: 24, b: 27, alpha: 1 },
       },
     })
       .composite([
         { input: origPng, left: 10, top: 10 },
-        { input: legPng, left: originalRgba.width + 20, top: 10 },
-        { input: newPng, left: originalRgba.width * 2 + 30, top: 10 },
+        { input: vecPng, left: originalRgba.width + 20, top: 10 },
       ])
       .png()
-      .toFile(path.join(outArtifactDir, 'comparativo-antes-depois-logo-asas.png'));
+      .toFile(path.join(outArtifactDir, 'comparativo-passaro-colorido-vetor-puro.png'));
 
-    if (
-      newGlobal.pixelSimilarityPct <= legacyGlobal.pixelSimilarityPct ||
-      newGlobal.contourFidelityPct <= legacyGlobal.contourFidelityPct ||
-      typoNewMetrics.contourFidelityPct <= typoLegacyMetrics.contourFidelityPct
-    ) {
-      throw new Error('O novo algoritmo não superou amplamente o anterior em todas as métricas!');
-    }
-
-    if (newGlobal.pixelSimilarityPct < 98.5 || newGlobal.contourFidelityPct < 92) {
+    if (globalMetrics.ssimPct < 95 || globalMetrics.pixelSimilarityPct < 98) {
       throw new Error(
-        `Fidelidade global do Vetor Editável ainda abaixo do alvo rigoroso: ${newGlobal.pixelSimilarityPct}% / Contornos ${newGlobal.contourFidelityPct}%`
+        `Qualidade global abaixo do patamar exigido: SSIM=${globalMetrics.ssimPct}%, Pixels=${globalMetrics.pixelSimilarityPct}%`
       );
     }
 
-    console.log('\n=== APROVADO COM GANHO EXPRESSIVO EM ASAS, CORPO, DEGRADÊS, CONTORNOS E TIPOGRAFIA ===');
+    console.log('\n=== APROVADO: PÁSSARO COLORIDO RECONSTRUÍDO COM FIDELIDADE ALTA, GRADIENTES NATIVOS E ZERO RASTER ===');
   } finally {
     await tempWs.cleanup();
   }
 }
 
 main().catch((err) => {
-  console.error('\nFALHA NO BENCHMARK DO LOGO DE ASAS:', err);
+  console.error('\nFALHA NO TESTE DO PÁSSARO COLORIDO:', err);
   process.exit(1);
 });

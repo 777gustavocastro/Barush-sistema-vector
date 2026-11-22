@@ -1,6 +1,7 @@
 import type { RawRgbaImage, TypographyRegion } from '../types';
-import { traceMaskWithPotraceToSvgElements } from '../vectorizers/potraceEngine';
+import { traceMaskToFlatBezierPathData } from '../vectorizers/potraceEngine';
 import { upscaleRgbaCatmullRom } from '../image-processing/filters';
+import { fitRegionSvgFill } from '../gradients/svgGradientReconstructor';
 
 interface GlyphCandidate {
   minX: number;
@@ -24,19 +25,26 @@ function rgbToHex(r: number, g: number, b: number): string {
   );
 }
 
+function hexToRgbTuple(hex: string): [number, number, number] {
+  const c = hex.replace('#', '');
+  return [
+    parseInt(c.slice(0, 2), 16),
+    parseInt(c.slice(2, 4), 16),
+    parseInt(c.slice(4, 6), 16),
+  ];
+}
+
 /**
- * Reconhecimento estrutural de regiões tipográficas (glifo por glifo + alinhamento de linha de base):
- * Identifica linhas de texto em logotipos, selos e artes gráficas para protegê-las contra simplificação
- * agressiva e reconstruir cada letra com curvas Bézier sub-pixel de altíssima precisão, sem inventar fontes.
+ * Detecção estrutural tipo OCR geométrico (MSER / limiar adaptativo por imagem integral + análise
+ * de colinearidade de linha de base, altura x-height/cap-height, espessura de haste e kerning).
  */
 export function detectTypographyRegions(image: RawRgbaImage): TypographyRegion[] {
   const { width, height, data } = image;
   const totalPixels = width * height;
-  if (width < 40 || height < 24 || totalPixels > 3_500_000) {
+  if (width < 40 || height < 20 || totalPixels > 3_500_000) {
     return [];
   }
 
-  // Calcula luminância composta e borda local para destacar traços tipográficos escuros ou claros
   const lum = new Float32Array(totalPixels);
   for (let i = 0; i < totalPixels; i++) {
     const idx = i * 4;
@@ -47,7 +55,6 @@ export function detectTypographyRegions(image: RawRgbaImage): TypographyRegion[]
     lum[i] = 0.299 * r + 0.587 * g + 0.114 * b;
   }
 
-  // Média local em janela rápida por imagem integral para limiar adaptativo (detecta texto escuro no claro E claro no escuro)
   const integral = new Float64Array((width + 1) * (height + 1));
   for (let y = 1; y <= height; y++) {
     let rowSum = 0;
@@ -79,7 +86,7 @@ export function detectTypographyRegions(image: RawRgbaImage): TypographyRegion[]
           integral[y0 * (width + 1) + x0];
         const localMean = sum / area;
         const diff = polarity === 'dark_on_light' ? localMean - lum[px] : lum[px] - localMean;
-        if (diff >= 26) {
+        if (diff >= 24) {
           mask[px] = 1;
         }
       }
@@ -88,7 +95,7 @@ export function detectTypographyRegions(image: RawRgbaImage): TypographyRegion[]
     const visited = new Uint8Array(totalPixels);
     const queue = new Int32Array(Math.min(totalPixels, 65536));
     const minGlyphH = 6;
-    const maxGlyphH = Math.max(18, Math.round(height * 0.28));
+    const maxGlyphH = Math.max(18, Math.round(height * 0.3));
 
     for (let start = 0; start < totalPixels; start++) {
       if (!mask[start] || visited[start]) continue;
@@ -150,10 +157,10 @@ export function detectTypographyRegions(image: RawRgbaImage): TypographyRegion[]
         gh >= minGlyphH &&
         gh <= maxGlyphH &&
         gw >= 2 &&
-        aspect >= 0.12 &&
-        aspect <= 3.2 &&
-        fillRatio >= 0.12 &&
-        fillRatio <= 0.86 &&
+        aspect >= 0.1 &&
+        aspect <= 3.4 &&
+        fillRatio >= 0.11 &&
+        fillRatio <= 0.88 &&
         area >= 8
       ) {
         candidates.push({
@@ -176,7 +183,6 @@ export function detectTypographyRegions(image: RawRgbaImage): TypographyRegion[]
     return [];
   }
 
-  // Agrupa candidatos a glifos colineares horizontalmente (mesma linha de base, altura similar e kerning regular)
   candidates.sort((a, b) => a.minX - b.minX);
   const used = new Uint8Array(candidates.length);
   const regions: TypographyRegion[] = [];
@@ -204,11 +210,11 @@ export function detectTypographyRegions(image: RawRgbaImage): TypographyRegion[]
       );
 
       if (
-        heightRatio <= 1.55 &&
-        (baselineDiff <= seed.height * 0.32 || toplineDiff <= seed.height * 0.32) &&
+        heightRatio <= 1.6 &&
+        (baselineDiff <= seed.height * 0.34 || toplineDiff <= seed.height * 0.34) &&
         horizGap >= -2 &&
-        horizGap <= seed.height * 2.1 &&
-        colorDist <= 42
+        horizGap <= seed.height * 2.2 &&
+        colorDist <= 48
       ) {
         lineGroup.push(cand);
         used[j] = 1;
@@ -216,8 +222,7 @@ export function detectTypographyRegions(image: RawRgbaImage): TypographyRegion[]
       }
     }
 
-    // Exige pelo menos 4 glifos colineares da mesma cor/altura para evitar falsos positivos em ícones geométricos
-    if (lineGroup.length >= 4) {
+    if (lineGroup.length >= 3) {
       let rx0 = width, ry0 = height, rx1 = 0, ry1 = 0;
       let rSum = 0, gSum = 0, bSum = 0;
       for (const g of lineGroup) {
@@ -240,7 +245,6 @@ export function detectTypographyRegions(image: RawRgbaImage): TypographyRegion[]
       const rw = Math.min(width - x, rx1 - rx0 + 1 + pad * 2);
       const rh = Math.min(height - y, ry1 - ry0 + 1 + pad * 2);
 
-      // Amostra a borda da caixa tipográfica para estimar se o fundo imediato da linha de texto é uniforme
       let borderR = 0, borderG = 0, borderB = 0, borderCount = 0;
       const borderSamples: Array<[number, number]> = [];
       for (let bx = x; bx < x + rw; bx += 2) {
@@ -264,7 +268,7 @@ export function detectTypographyRegions(image: RawRgbaImage): TypographyRegion[]
       const bgB = borderCount > 0 ? borderB / borderCount : 255;
       const inkBgContrast = Math.hypot(inkR - bgR, inkG - bgG, inkB - bgB);
 
-      if (inkBgContrast >= 65) {
+      if (inkBgContrast >= 60) {
         regions.push({
           id: `tipografia-${regions.length + 1}`,
           x,
@@ -284,31 +288,35 @@ export function detectTypographyRegions(image: RawRgbaImage): TypographyRegion[]
   return regions;
 }
 
-function hexToRgbTuple(hex: string): [number, number, number] {
-  const c = hex.replace('#', '');
-  return [
-    parseInt(c.slice(0, 2), 16),
-    parseInt(c.slice(2, 4), 16),
-    parseInt(c.slice(4, 6), 16),
-  ];
+interface IsolatedLetterBlob {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  pixels: number[];
 }
 
 /**
- * Reconstrói regiões tipográficas identificadas usando super-amostragem bicúbica 3× e traçado
- * Bézier de altíssima precisão (opttolerance=0.04, sem simplificação destrutiva), preservando
- * integralmente olhos das letras (A, B, R, O, e), hastes finas, serifas e cantos originais.
+ * Reconstrói cada linha tipográfica separando CADA LETRA INDIVIDUALMENTE como seu próprio
+ * caminho vetorial editável (<path id="letra-L-K" d="..."/>) com super-amostragem 3× sub-pixel,
+ * preservando kerning, espessura de haste, alinhamento, olhos internos (A, B, O, R, e) e acentos!
  */
 export async function reconstructHighPrecisionTypographySvg(
   sourceImage: RawRgbaImage,
   regions: TypographyRegion[],
-  parentCoordScaleFactor: number
-): Promise<string> {
-  if (regions.length === 0) return '';
+  parentCoordScaleFactor: number,
+  startingObjectIndex = 100
+): Promise<{ defsXml: string; groupsXml: string; letterPathCount: number }> {
+  if (regions.length === 0) {
+    return { defsXml: '', groupsXml: '', letterPathCount: 0 };
+  }
 
+  const defsList: string[] = [];
   const groups: string[] = [];
+  let letterPathCount = 0;
 
-  for (const reg of regions) {
-    // Extrai recorte exato da região de texto
+  for (let rIdx = 0; rIdx < regions.length; rIdx++) {
+    const reg = regions[rIdx];
     const cropData = new Uint8Array(reg.width * reg.height * 4);
     for (let ry = 0; ry < reg.height; ry++) {
       const srcOffset = ((reg.y + ry) * sourceImage.width + reg.x) * 4;
@@ -322,17 +330,18 @@ export async function reconstructHighPrecisionTypographySvg(
       height: reg.height,
     };
 
-    // Super-amostragem 3× Catmull-Rom monotônica para contornos sub-pixel perfeitos nas letras
-    const superFactor: 2 | 3 = Math.max(reg.width, reg.height) <= 360 ? 3 : 2;
+    const superFactor: 2 | 3 = Math.max(reg.width, reg.height) <= 420 ? 3 : 2;
     const upscaled = upscaleRgbaCatmullRom(cropImg, superFactor);
+    const uw = upscaled.width;
+    const uh = upscaled.height;
 
     const [inkR, inkG, inkB] = hexToRgbTuple(reg.inkHex);
     const [bgR, bgG, bgB] = hexToRgbTuple(reg.backgroundHex);
 
-    const glyphMask = new Uint8Array(upscaled.width * upscaled.height);
+    const glyphMask = new Uint8Array(uw * uh);
     for (let i = 0; i < glyphMask.length; i++) {
       const idx = i * 4;
-      if (upscaled.data[idx + 3] < 110) continue;
+      if (upscaled.data[idx + 3] < 105) continue;
       const r = upscaled.data[idx];
       const g = upscaled.data[idx + 1];
       const b = upscaled.data[idx + 2];
@@ -343,57 +352,169 @@ export async function reconstructHighPrecisionTypographySvg(
       }
     }
 
-    // Preenche o fundo local atrás das letras antes de desenhar os glifos super-precisos para cobrir qualquer resquício borrado da camada inferior
-    const bgPatchMask = new Uint8Array(upscaled.width * upscaled.height);
-    for (let i = 0; i < glyphMask.length; i++) {
-      if (!glyphMask[i]) continue;
-      const gx = i % upscaled.width;
-      const gy = (i - gx) / upscaled.width;
-      for (let dy = -2; dy <= 2; dy++) {
-        const ny = gy + dy;
-        if (ny < 0 || ny >= upscaled.height) continue;
-        for (let dx = -2; dx <= 2; dx++) {
-          const nx = gx + dx;
-          if (nx < 0 || nx >= upscaled.width) continue;
-          bgPatchMask[ny * upscaled.width + nx] = 1;
+    // Isola componentes conexos das letras em resolução 3×
+    const visited = new Uint8Array(uw * uh);
+    const queue = new Int32Array(uw * uh);
+    const rawBlobs: IsolatedLetterBlob[] = [];
+
+    for (let s = 0; s < glyphMask.length; s++) {
+      if (!glyphMask[s] || visited[s]) continue;
+      let head = 0;
+      let tail = 0;
+      queue[tail++] = s;
+      visited[s] = 1;
+
+      let minX = uw, maxX = 0, minY = uh, maxY = 0;
+      const pxList: number[] = [];
+
+      while (head < tail) {
+        const px = queue[head++];
+        pxList.push(px);
+        const x = px % uw;
+        const y = (px - x) / uw;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+
+        for (let dy = -1; dy <= 1; dy++) {
+          const ny = y + dy;
+          if (ny < 0 || ny >= uh) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const nx = x + dx;
+            if (nx < 0 || nx >= uw) continue;
+            const nPx = ny * uw + nx;
+            if (glyphMask[nPx] && !visited[nPx]) {
+              visited[nPx] = 1;
+              queue[tail++] = nPx;
+            }
+          }
         }
+      }
+
+      if (pxList.length >= 4) {
+        rawBlobs.push({ minX, minY, maxX, maxY, pixels: pxList });
       }
     }
 
+    if (rawBlobs.length === 0) continue;
+
+    // Agrupa pingos/acentos (i, j, é, ã, ç) à haste base alinhada verticalmente
+    rawBlobs.sort((a, b) => b.pixels.length - a.pixels.length);
+    const mergedFlags = new Uint8Array(rawBlobs.length);
+    const letters: IsolatedLetterBlob[] = [];
+
+    for (let i = 0; i < rawBlobs.length; i++) {
+      if (mergedFlags[i]) continue;
+      const base = rawBlobs[i];
+      mergedFlags[i] = 1;
+
+      for (let j = i + 1; j < rawBlobs.length; j++) {
+        if (mergedFlags[j]) continue;
+        const accent = rawBlobs[j];
+        const accentCenterX = (accent.minX + accent.maxX) * 0.5;
+        const horizAligned = accentCenterX >= base.minX - 3 && accentCenterX <= base.maxX + 3;
+        const vertClose =
+          Math.abs(base.minY - accent.maxY) <= uh * 0.35 ||
+          Math.abs(accent.minY - base.maxY) <= uh * 0.35;
+        if (horizAligned && vertClose && accent.pixels.length < base.pixels.length * 0.45) {
+          for (const p of accent.pixels) base.pixels.push(p);
+          base.minX = Math.min(base.minX, accent.minX);
+          base.minY = Math.min(base.minY, accent.minY);
+          base.maxX = Math.max(base.maxX, accent.maxX);
+          base.maxY = Math.max(base.maxY, accent.maxY);
+          mergedFlags[j] = 1;
+        }
+      }
+      letters.push(base);
+    }
+
+    // Ordena letras da esquerda para a direita (ordem natural de leitura e edição)
+    letters.sort((a, b) => a.minX - b.minX);
+
     const elemScale = parentCoordScaleFactor / superFactor;
-    const offsetX = reg.x * parentCoordScaleFactor;
-    const offsetY = reg.y * parentCoordScaleFactor;
+    const baseOffsetX = reg.x * parentCoordScaleFactor;
+    const baseOffsetY = reg.y * parentCoordScaleFactor;
 
-    const haloCoverXml = await traceMaskWithPotraceToSvgElements(
-      bgPatchMask,
-      upscaled.width,
-      upscaled.height,
-      reg.backgroundHex,
-      offsetX,
-      offsetY,
-      elemScale,
-      `${reg.id}-base`,
-      { alphamax: 0.9, opttolerance: 0.08, turdsize: 1 }
-    );
+    const letterPathsXml: string[] = [];
 
-    const crispGlyphsXml = await traceMaskWithPotraceToSvgElements(
-      glyphMask,
-      upscaled.width,
-      upscaled.height,
-      reg.inkHex,
-      offsetX,
-      offsetY,
-      elemScale,
-      `${reg.id}-glifo`,
-      { alphamax: 0.68, opttolerance: 0.035, turdsize: 1 }
-    );
+    for (let lIdx = 0; lIdx < letters.length; lIdx++) {
+      const letter = letters[lIdx];
+      const pad = 2;
+      const lx0 = Math.max(0, letter.minX - pad);
+      const ly0 = Math.max(0, letter.minY - pad);
+      const lw = Math.min(uw - lx0, letter.maxX - letter.minX + 1 + pad * 2);
+      const lh = Math.min(uh - ly0, letter.maxY - letter.minY + 1 + pad * 2);
 
-    if (crispGlyphsXml) {
+      const localMask = new Uint8Array(lw * lh);
+      const upscaledPxTyped = new Int32Array(letter.pixels.length);
+      for (let p = 0; p < letter.pixels.length; p++) {
+        const px = letter.pixels[p];
+        upscaledPxTyped[p] = px;
+        const x = (px % uw) - lx0;
+        const y = Math.floor(px / uw) - ly0;
+        localMask[y * lw + x] = 1;
+      }
+
+      const dList = await traceMaskToFlatBezierPathData(
+        localMask,
+        lw,
+        lh,
+        baseOffsetX + lx0 * elemScale,
+        baseOffsetY + ly0 * elemScale,
+        elemScale,
+        { alphamax: 1.0, opttolerance: 0.16 * superFactor, turdsize: superFactor * superFactor }
+      );
+
+      if (dList.length === 0) continue;
+
+      // Verifica se a letra possui cor sólida ou degradê próprio
+      const fillFit = fitRegionSvgFill(
+        upscaledPxTyped,
+        upscaledPxTyped.length,
+        letter.minX,
+        letter.minY,
+        letter.maxX,
+        letter.maxY,
+        upscaled,
+        elemScale,
+        `grad-letra-${rIdx + 1}-${lIdx + 1}`
+      );
+
+      let fillAttr = reg.inkHex;
+      if (fillFit.kind !== 'solid' && fillFit.defsXml) {
+        // Ajusta coordenadas do gradiente da letra somando (baseOffsetX, baseOffsetY)
+        const shiftedDefs = fillFit.defsXml
+          .replace(/\bx1="([^"]+)"/, (_, v) => `x1="${(Number(v) + baseOffsetX).toFixed(2)}"`)
+          .replace(/\by1="([^"]+)"/, (_, v) => `y1="${(Number(v) + baseOffsetY).toFixed(2)}"`)
+          .replace(/\bx2="([^"]+)"/, (_, v) => `x2="${(Number(v) + baseOffsetX).toFixed(2)}"`)
+          .replace(/\by2="([^"]+)"/, (_, v) => `y2="${(Number(v) + baseOffsetY).toFixed(2)}"`)
+          .replace(/\bcx="([^"]+)"/, (_, v) => `cx="${(Number(v) + baseOffsetX).toFixed(2)}"`)
+          .replace(/\bcy="([^"]+)"/, (_, v) => `cy="${(Number(v) + baseOffsetY).toFixed(2)}"`);
+        defsList.push(shiftedDefs);
+        fillAttr = fillFit.fillValue;
+      }
+
+      // Combina subpaths externos + olhos internos (ex: A, B, O, R, e) em um único <path> composto por letra!
+      const compoundD = dList.join(' ');
+      letterPathCount++;
+      letterPathsXml.push(
+        `<path id="letra-${rIdx + 1}-${lIdx + 1}" fill="${fillAttr}" d="${compoundD}"/>`
+      );
+    }
+
+    if (letterPathsXml.length > 0) {
+      const objId = `objeto-${startingObjectIndex + rIdx}`;
       groups.push(
-        `<g id="${reg.id}" data-typography-preserved="true">${haloCoverXml}${crispGlyphsXml}</g>`
+        `<g id="${objId}" data-tipo="tipografia-vetorial" data-letras="${letterPathsXml.length}">${letterPathsXml.join('')}</g>`
       );
     }
   }
 
-  return groups.join('');
+  return {
+    defsXml: defsList.join(''),
+    groupsXml: groups.join(''),
+    letterPathCount,
+  };
 }

@@ -54,16 +54,13 @@ async function loadPotraceModule(): Promise<PotraceModule> {
 }
 
 export function buildPotraceOptions(params: VectorizationParameters): PotraceOptions {
-  // turdsize=1 preserva pequenos pontos, acentos, serifas e extremidades finas
   const turdsize =
     params.noiseRemoval <= 15
       ? 1
       : Math.max(1, Math.round(1 + ((params.noiseRemoval - 15) / 85) * 14));
 
-  // alphamax equilibrado para preservar tanto cantos reais quanto curvas suaves
   const alphamax = Number((0.45 + (params.curveSmoothness / 100) * 0.72).toFixed(3));
 
-  // opttolerance baixo (0.04..0.45) para máxima precisão geométrica das curvas Bézier
   const opttolerance =
     params.pathSimplification <= 12
       ? 0.045
@@ -71,20 +68,177 @@ export function buildPotraceOptions(params: VectorizationParameters): PotraceOpt
 
   return {
     turdsize,
-    turnpolicy: 4, // POTRACE_TURNPOLICY_MINORITY (excelente para tipografia e pontas)
+    turnpolicy: 4, // POTRACE_TURNPOLICY_MINORITY
     alphamax,
     opticurve: params.curveSmoothness >= 8 ? 1 : 0,
     opttolerance,
     pathonly: false,
-    extractcolors: false, // Potrace é usado exclusivamente em modo monocromático puro de alta precisão
+    extractcolors: false,
     posterizelevel: 2,
     posterizationalgorithm: 0,
   };
 }
 
+function fmtCoord(v: number): string {
+  const r = Math.round(v * 100) / 100;
+  return Number.isInteger(r) ? String(r) : r.toFixed(2).replace(/0$/, '');
+}
+
 /**
- * Executa vetorização via Potrace exclusivamente para imagens monocromáticas e desenhos P&B,
- * utilizando super-amostragem bicúbica em imagens pequenas/médias para curvas sub-pixel perfeitas.
+ * Converte um atributo `d` gerado pelo Potrace (que opera em espaço escalado 10x e invertido em Y:
+ * `translate(0, maskHeight) scale(0.1, -0.1)`) diretamente para coordenadas absolutas planas
+ * no `viewBox` raiz do SVG, sem acúmulo de erro de arredondamento e sem matrizes `scale(0.1,-0.1)`.
+ */
+export function convertPotracePathDataToRootSpace(
+  dAttr: string,
+  maskHeight: number,
+  offsetX: number,
+  offsetY: number,
+  scale: number
+): string {
+  const tokens = dAttr.match(/[a-zA-Z]|[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/g);
+  if (!tokens || tokens.length === 0) return '';
+
+  const toRootX = (px: number) => fmtCoord(offsetX + px * 0.1 * scale);
+  const toRootY = (py: number) => fmtCoord(offsetY + (maskHeight - py * 0.1) * scale);
+
+  const out: string[] = [];
+  let i = 0;
+  let cmd = '';
+  let curX = 0;
+  let curY = 0;
+  let startX = 0;
+  let startY = 0;
+
+  const isCmd = (tok: string) => /^[a-zA-Z]$/.test(tok);
+
+  while (i < tokens.length) {
+    if (isCmd(tokens[i])) {
+      cmd = tokens[i++];
+    }
+    if (!cmd) break;
+
+    switch (cmd) {
+      case 'M':
+      case 'm': {
+        const rel = cmd === 'm';
+        let first = true;
+        while (i + 1 < tokens.length && !isCmd(tokens[i])) {
+          const nx = Number(tokens[i++]);
+          const ny = Number(tokens[i++]);
+          curX = rel ? curX + nx : nx;
+          curY = rel ? curY + ny : ny;
+          if (first) {
+            startX = curX;
+            startY = curY;
+            out.push(`M ${toRootX(curX)} ${toRootY(curY)}`);
+            first = false;
+          } else {
+            out.push(`L ${toRootX(curX)} ${toRootY(curY)}`);
+          }
+        }
+        break;
+      }
+      case 'L':
+      case 'l': {
+        const rel = cmd === 'l';
+        while (i + 1 < tokens.length && !isCmd(tokens[i])) {
+          const nx = Number(tokens[i++]);
+          const ny = Number(tokens[i++]);
+          curX = rel ? curX + nx : nx;
+          curY = rel ? curY + ny : ny;
+          out.push(`L ${toRootX(curX)} ${toRootY(curY)}`);
+        }
+        break;
+      }
+      case 'H':
+      case 'h': {
+        const rel = cmd === 'h';
+        while (i < tokens.length && !isCmd(tokens[i])) {
+          const nx = Number(tokens[i++]);
+          curX = rel ? curX + nx : nx;
+          out.push(`L ${toRootX(curX)} ${toRootY(curY)}`);
+        }
+        break;
+      }
+      case 'V':
+      case 'v': {
+        const rel = cmd === 'v';
+        while (i < tokens.length && !isCmd(tokens[i])) {
+          const ny = Number(tokens[i++]);
+          curY = rel ? curY + ny : ny;
+          out.push(`L ${toRootX(curX)} ${toRootY(curY)}`);
+        }
+        break;
+      }
+      case 'C':
+      case 'c': {
+        const rel = cmd === 'c';
+        while (i + 5 < tokens.length && !isCmd(tokens[i])) {
+          const x1 = rel ? curX + Number(tokens[i++]) : Number(tokens[i++]);
+          const y1 = rel ? curY + Number(tokens[i++]) : Number(tokens[i++]);
+          const x2 = rel ? curX + Number(tokens[i++]) : Number(tokens[i++]);
+          const y2 = rel ? curY + Number(tokens[i++]) : Number(tokens[i++]);
+          const x = rel ? curX + Number(tokens[i++]) : Number(tokens[i++]);
+          const y = rel ? curY + Number(tokens[i++]) : Number(tokens[i++]);
+          curX = x;
+          curY = y;
+          out.push(
+            `C ${toRootX(x1)} ${toRootY(y1)} ${toRootX(x2)} ${toRootY(y2)} ${toRootX(x)} ${toRootY(y)}`
+          );
+        }
+        break;
+      }
+      case 'S':
+      case 's': {
+        const rel = cmd === 's';
+        while (i + 3 < tokens.length && !isCmd(tokens[i])) {
+          const x2 = rel ? curX + Number(tokens[i++]) : Number(tokens[i++]);
+          const y2 = rel ? curY + Number(tokens[i++]) : Number(tokens[i++]);
+          const x = rel ? curX + Number(tokens[i++]) : Number(tokens[i++]);
+          const y = rel ? curY + Number(tokens[i++]) : Number(tokens[i++]);
+          curX = x;
+          curY = y;
+          out.push(`S ${toRootX(x2)} ${toRootY(y2)} ${toRootX(x)} ${toRootY(y)}`);
+        }
+        break;
+      }
+      case 'Q':
+      case 'q': {
+        const rel = cmd === 'q';
+        while (i + 3 < tokens.length && !isCmd(tokens[i])) {
+          const x1 = rel ? curX + Number(tokens[i++]) : Number(tokens[i++]);
+          const y1 = rel ? curY + Number(tokens[i++]) : Number(tokens[i++]);
+          const x = rel ? curX + Number(tokens[i++]) : Number(tokens[i++]);
+          const y = rel ? curY + Number(tokens[i++]) : Number(tokens[i++]);
+          curX = x;
+          curY = y;
+          out.push(`Q ${toRootX(x1)} ${toRootY(y1)} ${toRootX(x)} ${toRootY(y)}`);
+        }
+        break;
+      }
+      case 'Z':
+      case 'z': {
+        curX = startX;
+        curY = startY;
+        out.push('Z');
+        cmd = '';
+        break;
+      }
+      default: {
+        // Ignora token desconhecido com segurança
+        i++;
+        break;
+      }
+    }
+  }
+
+  return out.join(' ');
+}
+
+/**
+ * Executa vetorização via Potrace para imagens monocromáticas e P&B,
+ * emitindo caminhos Bézier cúbicos planos diretamente no sistema de coordenadas raiz do SVG.
  */
 export async function vectorizeWithPotrace(
   image: RawRgbaImage,
@@ -94,14 +248,13 @@ export async function vectorizeWithPotrace(
   const options = buildPotraceOptions(params);
 
   const longest = Math.max(image.width, image.height);
-  const workingImg =
-    params.subpixelUpscale !== false && longest <= 900
-      ? upscaleRgbaCatmullRom(image, 2)
-      : image;
+  const shouldUpscale = params.subpixelUpscale !== false && longest <= 900;
+  const upscaleFactor = shouldUpscale ? 2 : 1;
+  const workingImg = shouldUpscale ? upscaleRgbaCatmullRom(image, 2) : image;
 
   const binarized = binarizeForMonochromeWithColor(workingImg, params.contourSensitivity);
   const prepared = binarized.image;
-  const foregroundHex = binarized.foregroundHex;
+  const foregroundHex = binarized.foregroundHex || '#000000';
 
   const clamped = new Uint8ClampedArray(
     prepared.data.buffer,
@@ -109,7 +262,7 @@ export async function vectorizeWithPotrace(
     prepared.data.byteLength
   );
 
-  let svg = await potraceMod.potrace(
+  const rawSvg = await potraceMod.potrace(
     {
       data: clamped,
       width: prepared.width,
@@ -118,29 +271,41 @@ export async function vectorizeWithPotrace(
     options
   );
 
-  if (foregroundHex && foregroundHex.toLowerCase() !== '#000000') {
-    svg = svg.replace(/fill="#000000"/gi, `fill="${foregroundHex}"`);
+  const scale = 1 / upscaleFactor;
+  const pathRegex = /<path\b[^>]*\bd="([^"]+)"[^>]*\/?>/gi;
+  const paths: string[] = [];
+  let match: RegExpExecArray | null;
+  let idx = 1;
+  while ((match = pathRegex.exec(rawSvg)) !== null) {
+    const flatD = convertPotracePathDataToRootSpace(match[1], prepared.height, 0, 0, scale);
+    if (flatD) {
+      paths.push(`<path id="caminho-${idx++}" fill="${foregroundHex}" d="${flatD}"/>`);
+    }
   }
 
-  return svg;
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${image.width}" height="${image.height}" viewBox="0 0 ${image.width} ${image.height}">`,
+    `  <g id="objeto-1" data-tipo="monocromatico">`,
+    ...paths.map((p) => `    ${p}`),
+    `  </g>`,
+    `</svg>`,
+  ].join('\n');
 }
 
 /**
- * Traça uma máscara binária (0/1) com Potrace de alta precisão e retorna um grupo <g> posicionado
- * com o preenchimento desejado (cor sólida ou referência url(#gradiente) nativa do SVG).
+ * Traça uma máscara binária (0/1) com Potrace de alta precisão e retorna a lista de atributos `d`
+ * de curvas Bézier cúbicas já convertidas para coordenadas planas na raiz do `viewBox` do SVG!
  */
-export async function traceMaskWithPotraceToSvgElements(
+export async function traceMaskToFlatBezierPathData(
   binaryMask: Uint8Array,
   width: number,
   height: number,
-  fillValue: string,
   offsetX: number,
   offsetY: number,
   scale: number,
-  groupId: string,
   customOpts?: { alphamax?: number; opttolerance?: number; turdsize?: number }
-): Promise<string> {
-  if (width < 2 || height < 2) return '';
+): Promise<string[]> {
+  if (width < 2 || height < 2) return [];
 
   let hasActive = false;
   for (let i = 0; i < binaryMask.length; i++) {
@@ -149,7 +314,7 @@ export async function traceMaskWithPotraceToSvgElements(
       break;
     }
   }
-  if (!hasActive) return '';
+  if (!hasActive) return [];
 
   const potraceMod = await loadPotraceModule();
   const rgba = new Uint8ClampedArray(width * height * 4);
@@ -167,35 +332,63 @@ export async function traceMaskWithPotraceToSvgElements(
     {
       turdsize: customOpts?.turdsize ?? 1,
       turnpolicy: 4,
-      alphamax: customOpts?.alphamax ?? 0.88,
+      alphamax: customOpts?.alphamax ?? 0.92,
       opticurve: 1,
-      opttolerance: customOpts?.opttolerance ?? 0.05,
+      opttolerance: customOpts?.opttolerance ?? 0.055,
       pathonly: false,
       extractcolors: false,
     }
   );
 
-  const innerMatch = rawSvg.match(/<svg\b[^>]*>([\s\S]*?)<\/svg>/i);
-  if (!innerMatch) return '';
+  const outD: string[] = [];
+  const pathRegex = /<path\b[^>]*\bd="([^"]+)"[^>]*\/?>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = pathRegex.exec(rawSvg)) !== null) {
+    const flatD = convertPotracePathDataToRootSpace(match[1], height, offsetX, offsetY, scale);
+    if (flatD) {
+      outD.push(flatD);
+    }
+  }
+  return outD;
+}
 
-  let inner = innerMatch[1].trim();
-  if (!/<path\b/i.test(inner)) return '';
+/**
+ * Wrapper compatível que retorna um grupo `<g id="...">` contendo `<path>` em coordenadas planas raiz
+ * (sem `scale(0.1, -0.1)`), garantindo funcionamento exato de `gradientUnits="userSpaceOnUse"`.
+ */
+export async function traceMaskWithPotraceToSvgElements(
+  binaryMask: Uint8Array,
+  width: number,
+  height: number,
+  fillValue: string,
+  offsetX: number,
+  offsetY: number,
+  scale: number,
+  groupId: string,
+  customOpts?: { alphamax?: number; opttolerance?: number; turdsize?: number },
+  fillOpacity?: number
+): Promise<string> {
+  const flatPaths = await traceMaskToFlatBezierPathData(
+    binaryMask,
+    width,
+    height,
+    offsetX,
+    offsetY,
+    scale,
+    customOpts
+  );
+  if (flatPaths.length === 0) return '';
 
-  inner = inner.replace(/fill="#000000"/gi, `fill="${fillValue}"`);
-  if (!/\bfill\s*=/i.test(inner)) {
-    inner = `<g fill="${fillValue}">${inner}</g>`;
+  const opacityAttr =
+    fillOpacity !== undefined && fillOpacity < 0.995
+      ? ` fill-opacity="${Number(fillOpacity.toFixed(3))}"`
+      : '';
+
+  if (flatPaths.length === 1) {
+    return `<g id="${groupId}"><path fill="${fillValue}"${opacityAttr} d="${flatPaths[0]}"/></g>`;
   }
 
-  const tx = Number(offsetX.toFixed(3));
-  const ty = Number(offsetY.toFixed(3));
-  const sc = Number(scale.toFixed(6));
-
-  const transformAttr =
-    tx === 0 && ty === 0 && sc === 1
-      ? ''
-      : sc === 1
-        ? ` transform="translate(${tx},${ty})"`
-        : ` transform="translate(${tx},${ty}) scale(${sc})"`;
-
-  return `<g id="${groupId}"${transformAttr}>${inner}</g>`;
+  return `<g id="${groupId}">${flatPaths
+    .map((d) => `<path fill="${fillValue}"${opacityAttr} d="${d}"/>`)
+    .join('')}</g>`;
 }

@@ -7,11 +7,6 @@ export interface RasterValidationResult {
   error?: string;
 }
 
-export interface SvgValidationOptions {
-  /** Quando verdadeiro (exclusivo para Modo 1 — Fidelidade Visual Máxima), permite camada raster embutida devidamente identificada. */
-  allowHybridRaster?: boolean;
-}
-
 const MAX_FILE_BYTES = 25 * 1024 * 1024; // 25 MB limite seguro local
 
 /**
@@ -92,14 +87,13 @@ function parseNumericAttr(raw: string | undefined): number | null {
 }
 
 /**
- * Valida se o conteúdo gerado é um documento SVG íntegro.
- * - No Modo Vetor Editável (padrão, allowHybridRaster=false): rejeita estritamente qualquer imagem raster embutida (<image>).
- * - No Modo Fidelidade Visual Máxima (allowHybridRaster=true): aceita SVG híbrido contendo contornos vetoriais + camada raster identificada.
+ * Validação rigorosa de vetorização real (Seção 9 e Seção 11):
+ * PROIBIÇÃO ABSOLUTA de elementos <image>, <feImage>, PNG/JPEG/WebP incorporados,
+ * data:image/*, Base64 raster ou qualquer camada rasterizada oculta/sobreposta.
+ * Contabiliza objetos (<g id="objeto-...">), grupos (<g>), caminhos (<path>),
+ * gradientes (<linearGradient> / <radialGradient>) e dimensões do SVG.
  */
-export function validateSvgStructure(
-  svgContent: string,
-  options: SvgValidationOptions = {}
-): SvgValidationReport {
+export function validateSvgStructure(svgContent: string): SvgValidationReport {
   const errors: string[] = [];
   const warnings: string[] = [];
   const trimmed = svgContent.trim();
@@ -113,8 +107,13 @@ export function validateSvgStructure(
       width: null,
       height: null,
       viewBox: null,
+      objectCount: 0,
+      groupCount: 0,
       pathCount: 0,
       gradientCount: 0,
+      linearGradientCount: 0,
+      radialGradientCount: 0,
+      clipPathCount: 0,
       totalVectorElements: 0,
       hasEmbeddedRaster: false,
       byteLength: 0,
@@ -144,38 +143,67 @@ export function validateSvgStructure(
   const viewBox = viewBoxMatch?.[1]?.trim() ?? null;
 
   if (!viewBox && (width === null || height === null)) {
-    warnings.push('O SVG não define viewBox nem par explícito de width/height.');
+    errors.push('O SVG deve definir viewBox e dimensões válidas.');
   }
+
+  // Contagem de grupos e objetos independentes (<g id="objeto-...">)
+  const groupMatches = [...trimmed.matchAll(/<g\b([^>]*)>/gi)];
+  const groupCount = groupMatches.length;
+  const explicitObjects = groupMatches.filter((m) =>
+    /\bid\s*=\s*["']objeto-[^"']+["']/i.test(m[1])
+  ).length;
 
   const pathMatches = [...trimmed.matchAll(/<path\b[^>]*\bd\s*=\s*["']([^"']*)["'][^>]*\/?>/gi)];
   const nonEmptyPaths = pathMatches.filter((m) => /[MLHVCSQTAZmlhvcsqtaz]/.test(m[1]));
   const pathCount = nonEmptyPaths.length;
 
-  const gradientCount = [
-    ...trimmed.matchAll(/<(linearGradient|radialGradient)\b[^>]*>/gi),
-  ].length;
-
-  const otherPrimitives = [
-    ...trimmed.matchAll(/<(polygon|polyline|rect|circle|ellipse|line|text)\b[^>]*\/?>/gi),
-  ].length;
-  const totalVectorElements = pathCount + otherPrimitives;
-
-  if (totalVectorElements === 0) {
-    errors.push('Nenhum caminho (<path>) ou primitiva geométrica vetorial válida encontrada no SVG.');
+  if (pathMatches.length > nonEmptyPaths.length) {
+    warnings.push('Foram ignorados elementos <path> com atributo d vazio.');
   }
 
-  const hasEmbeddedRaster =
-    /<image\b[^>]*>/i.test(trimmed) || /data:image\/(png|jpeg|webp|bmp)/i.test(trimmed);
+  const linearGradientCount = [...trimmed.matchAll(/<linearGradient\b[^>]*>/gi)].length;
+  const radialGradientCount = [...trimmed.matchAll(/<radialGradient\b[^>]*>/gi)].length;
+  const gradientCount = linearGradientCount + radialGradientCount;
+  const clipPathCount = [...trimmed.matchAll(/<clipPath\b[^>]*>/gi)].length;
 
-  if (hasEmbeddedRaster) {
-    if (options.allowHybridRaster) {
-      warnings.push(
-        'SVG Híbrido (Fidelidade Visual Máxima): contém a imagem original rasterizada incorporada junto à estrutura vetorial.'
-      );
-    } else {
-      errors.push(
-        'O arquivo contém imagem raster embutida (<image>), sendo inválido para o Modo Vetor Editável.'
-      );
+  const otherPrimitives = [
+    ...trimmed.matchAll(/<(polygon|polyline|rect|circle|ellipse|line)\b[^>]*\/?>/gi),
+  ].length;
+  const totalVectorElements = pathCount + otherPrimitives;
+  const objectCount = explicitObjects > 0 ? explicitObjects : Math.max(groupCount, pathCount > 0 ? 1 : 0);
+
+  if (totalVectorElements === 0) {
+    errors.push('Nenhum caminho (<path>) ou primitiva geométrica vetorial editável encontrada no SVG.');
+  }
+
+  // Verificação estrita anti-raster (Proibições Absolutas — Seção 9)
+  const hasImageTag = /<(?:svg:)?image\b[^>]*>/i.test(trimmed) || /<feImage\b[^>]*>/i.test(trimmed);
+  const hasDataUriRaster = /data:image\/(?:png|jpe?g|webp|bmp|gif|tiff|avif)/i.test(trimmed);
+  const hasBase64Payload = /;base64,[A-Za-z0-9+/=]{16,}/i.test(trimmed);
+  const hasExternalRasterHref =
+    /\b(?:xlink:)?href\s*=\s*["'][^#"']+\.(?:png|jpe?g|webp|bmp|gif)(?:\?[^"']*)?["']/i.test(trimmed);
+
+  const hasEmbeddedRaster =
+    hasImageTag || hasDataUriRaster || hasBase64Payload || hasExternalRasterHref;
+
+  if (hasImageTag) {
+    errors.push('PROIBIDO: Elemento raster <image> ou <feImage> detectado no SVG.');
+  }
+  if (hasDataUriRaster || hasBase64Payload) {
+    errors.push('PROIBIDO: Dados de imagem rasterizada (Data URI / Base64) detectados no SVG.');
+  }
+  if (hasExternalRasterHref) {
+    errors.push('PROIBIDO: Referência externa a imagem rasterizada detectada no SVG.');
+  }
+
+  // Verifica se todos os url(#id) de gradientes referenciados em fill existem em <defs>
+  const referencedGradIds = [...trimmed.matchAll(/\bfill\s*=\s*["']url\(#([^)"']+)["']\)/gi)].map(
+    (m) => m[1]
+  );
+  for (const refId of referencedGradIds) {
+    const escaped = refId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (!new RegExp(`<(?:linearGradient|radialGradient)\\b[^>]*\\bid=["']${escaped}["']`, 'i').test(trimmed)) {
+      errors.push(`Gradiente referenciado #${refId} não está definido no SVG.`);
     }
   }
 
@@ -186,8 +214,13 @@ export function validateSvgStructure(
     width,
     height,
     viewBox,
+    objectCount,
+    groupCount,
     pathCount,
     gradientCount,
+    linearGradientCount,
+    radialGradientCount,
+    clipPathCount,
     totalVectorElements,
     hasEmbeddedRaster,
     byteLength,

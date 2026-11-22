@@ -36,10 +36,12 @@ export const RealSvgViewport: React.FC<RealSvgViewportProps> = ({
       return;
     }
 
-    // Defesa em profundidade: garante remoção de elementos/atributos executáveis
-    svgEl.querySelectorAll('script, foreignObject, iframe, object, embed').forEach((node) => {
-      node.remove();
-    });
+    // Defesa em profundidade: garante remoção de elementos executáveis e qualquer tag raster proibida
+    svgEl
+      .querySelectorAll('script, foreignObject, iframe, object, embed, image, feImage')
+      .forEach((node) => {
+        node.remove();
+      });
 
     svgEl.querySelectorAll('*').forEach((el) => {
       for (const attr of Array.from(el.attributes)) {

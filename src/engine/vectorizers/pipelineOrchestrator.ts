@@ -2,7 +2,6 @@ import type {
   DetectedImageCategory,
   ProgressCallback,
   RawRgbaImage,
-  ResultOutputMode,
   TunedSliderValues,
   VectorizationParameters,
   VectorizationPipelineResult,
@@ -25,29 +24,29 @@ import {
 import { validateSvgStructure } from '../validation/fileValidator';
 import { reconstructNativeSvgGradients } from '../gradients/svgGradientReconstructor';
 import { reconstructHighPrecisionTypographySvg } from '../typography/typographyProcessor';
-import { buildHybridMaxFidelitySvg } from '../hybrid/hybridSvgBuilder';
-import { evaluateSvgVisualQuality } from '../quality/qualityEvaluator';
+import {
+  organizeVTracerPathsIntoObjects,
+  reconstructImageAsEditableObjects,
+} from '../reconstruction/objectVectorReconstructor';
+import {
+  evaluateAndSelectBestCandidate,
+  type VectorSvgCandidateInput,
+} from '../quality/qualityEvaluator';
 
-function selectTargetEngine(
+function isStrictlyMonochromeRequest(
   params: VectorizationParameters,
   detectedCategory: DetectedImageCategory,
   isMonochromeCandidate: boolean
-): 'vtracer' | 'potrace' {
-  if (params.engine === 'vtracer' || params.engine === 'potrace') {
-    return params.engine;
+): boolean {
+  if (params.engine === 'potrace' || params.profile === 'monochrome_logo') {
+    return true;
   }
-  if (params.profile === 'monochrome_logo') {
-    return 'potrace';
-  }
-  // NUNCA utiliza Potrace em imagens coloridas ou com degradês!
-  if (
+  return (
+    params.engine !== 'vtracer' &&
     isMonochromeCandidate &&
     detectedCategory === 'monochrome_drawing' &&
     params.colorCount <= 3
-  ) {
-    return 'potrace';
-  }
-  return 'vtracer';
+  );
 }
 
 function chooseSubpixelUpscaleFactor(
@@ -67,43 +66,44 @@ function chooseSubpixelUpscaleFactor(
     return 1;
   }
 
-  // Logos coloridos, logos com degradês, ícones e ilustrações pequenas/médias ganham curvas Bézier sub-pixel 2×/3×
   if (
     category === 'gradient_logo' ||
     category === 'solid_logo' ||
     category === 'complex_illustration'
   ) {
-    if (longest <= 380 && pixels <= 120_000) return 3;
-    if (longest <= 960 && pixels <= 680_000) return 2;
+    if (longest <= 360 && pixels <= 110_000) return 3;
+    if (longest <= 920 && pixels <= 640_000) return 2;
   }
 
   return 1;
 }
 
+export interface InternalPipelineRunOutput {
+  result: VectorizationPipelineResult;
+  candidates: VectorSvgCandidateInput[];
+}
+
 /**
- * Pipeline adaptativo completo de alta fidelidade:
- * 1. Diagnóstico adaptativo (6 classes estratégicas + detecção de tipografia e degradês);
- * 2. Limpeza leve de alfa e super-amostragem bicúbica Catmull-Rom monotônica (sub-pixel sem serrilhados);
- * 3. Vetorização principal (VTracer 24-bit empilhado ou Potrace exclusivamente em artes monocromáticas);
- * 4. Reconstrução complementar de gradientes nativos (<linearGradient>/<radialGradient>) e nitidez tipográfica 3×;
- * 5. Suporte explícito aos 2 Modos de Resultado:
- *    - MODO 2 ('editable_vector'): 100% caminhos, curvas Bézier e gradientes vetoriais editáveis;
- *    - MODO 1 ('max_visual_fidelity'): preserva 100% da aparência visual com SVG híbrido claramente identificado quando necessário;
- * 6. Avaliação comparativa real (pixels, PSNR, contornos e cores) + validação rigorosa.
+ * Pipeline de Reconstrução Vetorial Avançada (100% Editável, ZERO Raster):
+ * - Etapa A: Análise perceptual OpenCV + diagnóstico de paleta 24-bit, bordas, gradientes, transparências e texto.
+ * - Etapa B & C: Separação de objetos (<g id="objeto-N">) e reconstrução geométrica em curvas Bézier cúbicas.
+ * - Seção 3 & 6: Reconstrução nativa de <linearGradient>, <radialGradient>, multi-stops, stop-opacity e <clipPath>.
+ * - Seção 4: Geração e comparação de candidatos complementares com VTracer ajustado por categoria.
+ * - Seção 5: Tipografia 100% vetorial letra por letra (<path id="letra-...">).
+ * - Seção 10 & 11: Seleção perceptual multi-candidato (SSIM + CIE ΔE + Contornos + Gradientes) e auditoria anti-raster.
  */
-export async function runVectorizationOnRgba(
+export async function runVectorizationOnRgbaInternal(
   sourceImage: RawRgbaImage,
   params: VectorizationParameters,
   onProgress?: ProgressCallback
-): Promise<VectorizationPipelineResult> {
+): Promise<InternalPipelineRunOutput> {
   const startedAt = performance.now();
   const originalWidth = sourceImage.width;
   const originalHeight = sourceImage.height;
-  const outputMode: ResultOutputMode = params.outputMode ?? 'editable_vector';
 
   onProgress?.({
     stageId: 'analyze',
-    stageLabel: 'Diagnosticando paleta 24-bit, degradês, contornos e tipografia...',
+    stageLabel: 'Etapa A: Analisando regiões, bordas, degradês e tipografia com OpenCV...',
     percent: 12,
   });
 
@@ -126,233 +126,296 @@ export async function runVectorizationOnRgba(
     ...effectiveSliders,
   };
 
-  const baseEngine = selectTargetEngine(
-    resolvedParams,
-    colorAnalysis.detectedCategory,
-    colorAnalysis.isMonochromeCandidate
-  );
-
-  onProgress?.({
-    stageId: 'preprocess',
-    stageLabel: 'Preparando contornos sub-pixel sem perda de detalhes...',
-    percent: 28,
-  });
-
   const maxDim = params.maxWorkingDimension ?? DEFAULT_MAX_WORKING_DIMENSION;
   const alphaCleaned = cleanAlphaFringes(sourceImage);
   const { image: baseWorkingImage, wasDownscaled } = downscaleRgbaIfNeeded(
     alphaCleaned,
     maxDim
   );
-
-  // Só aplica redução de ruído quando explicitamente configurado (> 15), protegendo 100% dos detalhes por padrão
   const denoisedImage = reduceImageNoise(baseWorkingImage, resolvedParams.noiseRemoval);
 
-  const upscaleFactor =
-    baseEngine === 'vtracer'
-      ? chooseSubpixelUpscaleFactor(
-          denoisedImage.width,
-          denoisedImage.height,
-          colorAnalysis.detectedCategory,
-          resolvedParams.detailPrecision,
-          params.subpixelUpscale !== false
-        )
-      : 1;
+  const candidates: VectorSvgCandidateInput[] = [];
+  let upscaleFactor: 1 | 2 | 3 = 1;
 
-  const traceInputImage =
-    upscaleFactor === 2 || upscaleFactor === 3
-      ? upscaleRgbaCatmullRom(denoisedImage, upscaleFactor)
-      : denoisedImage;
-
-  onProgress?.({
-    stageId: 'trace',
-    stageLabel:
-      baseEngine === 'potrace'
-        ? 'Reconstruindo curvas Bézier monocromáticas de alta precisão...'
-        : `Reconstruindo camadas e curvas spline (${colorAnalysis.categoryLabel})...`,
-    percent: 52,
-  });
-
-  const rawEngineSvg =
-    baseEngine === 'potrace'
-      ? await vectorizeWithPotrace(denoisedImage, resolvedParams)
-      : await vectorizeWithVTracer(
-          traceInputImage,
-          resolvedParams,
-          colorAnalysis.detectedCategory
-        );
-
-  // Determina a largura/altura do viewBox gerado pelo motor
-  const viewBoxWidth = traceInputImage.width;
-  const viewBoxHeight = traceInputImage.height;
-  const coordScaleFromBase = viewBoxWidth / baseWorkingImage.width;
-
-  onProgress?.({
-    stageId: 'gradients_typography',
-    stageLabel: 'Reconstruindo degradês nativos SVG e preservando tipografia...',
-    percent: 72,
-  });
-
-  // Etapa complementar 1: Reconstrução nativa de gradientes (<linearGradient> / <radialGradient>)
-  let gradDefsXml = '';
-  let gradLayersXml = '';
-  let reconstructedGradientCount = 0;
-
-  const shouldReconstructGradients =
-    params.reconstructGradients !== false &&
-    baseEngine === 'vtracer' &&
-    resolvedParams.colorCount >= 24 &&
-    (colorAnalysis.detectedCategory === 'gradient_logo' ||
-      colorAnalysis.detectedCategory === 'complex_illustration' ||
-      colorAnalysis.gradientRatio >= 0.24);
-
-  if (shouldReconstructGradients) {
-    const gradRes = await reconstructNativeSvgGradients(
-      baseWorkingImage,
-      coordScaleFromBase
-    );
-    gradDefsXml = gradRes.defsXml;
-    gradLayersXml = gradRes.layersXml;
-    reconstructedGradientCount = gradRes.count;
-  }
-
-  // Etapa complementar 2: Reforço de altíssima precisão 3× para linhas de tipografia detectadas
-  let typographyXml = '';
   if (
-    params.enhanceTypography !== false &&
-    baseEngine === 'vtracer' &&
-    colorAnalysis.typographyRegions.length > 0 &&
-    resolvedParams.detailPrecision >= 75
+    isStrictlyMonochromeRequest(
+      resolvedParams,
+      colorAnalysis.detectedCategory,
+      colorAnalysis.isMonochromeCandidate
+    )
   ) {
-    const scaleFromOrigToViewBox = viewBoxWidth / originalWidth;
-    typographyXml = await reconstructHighPrecisionTypographySvg(
-      alphaCleaned,
-      colorAnalysis.typographyRegions,
-      scaleFromOrigToViewBox
+    onProgress?.({
+      stageId: 'reconstruct_bezier',
+      stageLabel: 'Reconstruindo curvas Bézier monocromáticas em coordenadas planas...',
+      percent: 55,
+    });
+
+    const monoRaw = await vectorizeWithPotrace(denoisedImage, resolvedParams);
+    const monoNorm = normalizeSvgForEditorsAndScaling(
+      monoRaw,
+      originalWidth,
+      originalHeight,
+      denoisedImage.width,
+      denoisedImage.height
     );
-  }
+    candidates.push({
+      candidateId: 'potrace-bezier-puro',
+      label: 'Curvas Bézier Monocromáticas Sub-Pixel',
+      engineKind: 'potrace_bezier',
+      svg: monoNorm,
+    });
+  } else {
+    onProgress?.({
+      stageId: 'segment_objects',
+      stageLabel: 'Etapa B: Separando objetos independentes e regiões cromáticas (OpenCV)...',
+      percent: 30,
+    });
 
-  // Monta primeiro o candidato base puro e verifica se as camadas complementares aumentam ou mantêm a fidelidade
-  const pureBaseNormalized = normalizeSvgForEditorsAndScaling(
-    rawEngineSvg,
-    originalWidth,
-    originalHeight,
-    viewBoxWidth,
-    viewBoxHeight
-  );
+    // Reconstrução tipográfica letra por letra em coordenadas da imagem de trabalho (1:1)
+    let typoBaseDefs = '';
+    let typoBaseGroups = '';
+    if (
+      params.enhanceTypography !== false &&
+      colorAnalysis.typographyRegions.length > 0 &&
+      resolvedParams.detailPrecision >= 65
+    ) {
+      const scaleOrigToBase = baseWorkingImage.width / originalWidth;
+      const typoRes = await reconstructHighPrecisionTypographySvg(
+        alphaCleaned,
+        colorAnalysis.typographyRegions,
+        scaleOrigToBase,
+        200
+      );
+      typoBaseDefs = typoRes.defsXml;
+      typoBaseGroups = typoRes.groupsXml;
+    }
 
-  let chosenPureVectorSvg = pureBaseNormalized;
-  if (gradLayersXml || typographyXml) {
-    const enhancedCandidate = normalizeSvgForEditorsAndScaling(
-      rawEngineSvg,
+    // CANDIDATO 1: Reconstrução Orientada a Objetos OpenCV + Curvas Bézier Cúbicas + Gradientes SVG Nativos Multi-Stop
+    const totalWorkPixels = denoisedImage.width * denoisedImage.height;
+    if (totalWorkPixels <= 950_000) {
+      onProgress?.({
+        stageId: 'reconstruct_bezier',
+        stageLabel: 'Etapa C: Reconstruindo objetos editáveis, curvas Bézier e gradientes SVG nativos...',
+        percent: 50,
+      });
+
+      const objRec = await reconstructImageAsEditableObjects(
+        denoisedImage,
+        resolvedParams,
+        colorAnalysis.detectedCategory,
+        typoBaseDefs,
+        typoBaseGroups,
+        colorAnalysis.typographyRegions
+      );
+
+      const cand1Svg = normalizeSvgForEditorsAndScaling(
+        objRec.svg,
+        originalWidth,
+        originalHeight,
+        denoisedImage.width,
+        denoisedImage.height
+      );
+
+      candidates.push({
+        candidateId: 'opencv-objetos-gradientes',
+        label: 'OpenCV Objetos + Bézier + Gradientes SVG Nativos',
+        engineKind: 'opencv_bezier_gradients',
+        svg: cand1Svg,
+      });
+    }
+
+    // CANDIDATO 2 & 3: VTracer Multi-Configuração Aperfeiçoado + Organização em Objetos + Gradientes Nativos + Tipografia 3×
+    onProgress?.({
+      stageId: 'gradients_typography',
+      stageLabel: 'Gerando candidatos complementares VTracer Spline + Gradientes Nativos...',
+      percent: 68,
+    });
+
+    upscaleFactor = chooseSubpixelUpscaleFactor(
+      denoisedImage.width,
+      denoisedImage.height,
+      colorAnalysis.detectedCategory,
+      resolvedParams.detailPrecision,
+      params.subpixelUpscale !== false
+    );
+
+    const traceInputImage =
+      upscaleFactor === 2 || upscaleFactor === 3
+        ? upscaleRgbaCatmullRom(denoisedImage, upscaleFactor)
+        : denoisedImage;
+
+    const viewBoxWidth = traceInputImage.width;
+    const viewBoxHeight = traceInputImage.height;
+    const coordScaleFromBase = viewBoxWidth / baseWorkingImage.width;
+
+    let gradDefsXml = '';
+    let gradLayersXml = '';
+    if (
+      params.reconstructGradients !== false &&
+      resolvedParams.colorCount >= 16 &&
+      (colorAnalysis.detectedCategory === 'gradient_logo' ||
+        colorAnalysis.detectedCategory === 'complex_illustration' ||
+        colorAnalysis.gradientRatio >= 0.18)
+    ) {
+      const gradRes = await reconstructNativeSvgGradients(
+        denoisedImage,
+        coordScaleFromBase
+      );
+      gradDefsXml = gradRes.defsXml;
+      gradLayersXml = gradRes.layersXml;
+    }
+
+    let typoScaledDefs = '';
+    let typoScaledGroups = '';
+    if (
+      params.enhanceTypography !== false &&
+      colorAnalysis.typographyRegions.length > 0 &&
+      resolvedParams.detailPrecision >= 65
+    ) {
+      const scaleOrigToViewBox = viewBoxWidth / originalWidth;
+      const typoScaled = await reconstructHighPrecisionTypographySvg(
+        alphaCleaned,
+        colorAnalysis.typographyRegions,
+        scaleOrigToViewBox,
+        200
+      );
+      typoScaledDefs = typoScaled.defsXml;
+      typoScaledGroups = typoScaled.groupsXml;
+    }
+
+    // Variante VTracer A: Spline equilibrado com agrupamento em objetos + gradientes nativos
+    const rawVtSpline = await vectorizeWithVTracer(
+      traceInputImage,
+      resolvedParams,
+      colorAnalysis.detectedCategory,
+      'balanced_spline'
+    );
+    const groupedVtSpline = organizeVTracerPathsIntoObjects(
+      rawVtSpline,
+      viewBoxWidth,
+      viewBoxHeight
+    );
+    const cand2Svg = normalizeSvgForEditorsAndScaling(
+      groupedVtSpline,
       originalWidth,
       originalHeight,
       viewBoxWidth,
       viewBoxHeight,
-      gradDefsXml,
-      `${gradLayersXml}${typographyXml}`
+      `${gradDefsXml}${typoScaledDefs}`,
+      `${gradLayersXml}${typoScaledGroups}`
     );
 
-    const [baseQuality, enhancedQuality] = await Promise.all([
-      evaluateSvgVisualQuality(sourceImage, pureBaseNormalized, colorAnalysis.hasTransparency),
-      evaluateSvgVisualQuality(sourceImage, enhancedCandidate, colorAnalysis.hasTransparency),
-    ]);
+    candidates.push({
+      candidateId: 'vtracer-spline-gradientes',
+      label: 'VTracer Spline + Objetos + Gradientes Nativos',
+      engineKind: 'vtracer_rek_gradients',
+      svg: cand2Svg,
+    });
 
-    // Se conseguirmos medir em tempo de execução, garante que a camada complementar melhora ou mantém a fidelidade visual!
-    if (baseQuality && enhancedQuality) {
-      if (enhancedQuality.pixelSimilarityPct + 0.15 >= baseQuality.pixelSimilarityPct) {
-        chosenPureVectorSvg = enhancedCandidate;
-      } else {
-        reconstructedGradientCount = 0;
-      }
-    } else {
-      chosenPureVectorSvg = enhancedCandidate;
-    }
-  }
-
-  onProgress?.({
-    stageId: 'optimize',
-    stageLabel: 'Normalizando estrutura SVG de alta precisão...',
-    percent: 86,
-  });
-
-  const shouldOptimize = params.optimizeSvg !== false;
-  const optimization = shouldOptimize
-    ? optimizeVectorSvg(chosenPureVectorSvg, {
-        floatPrecision: resolvedParams.detailPrecision >= 75 ? 4 : 3,
-      })
-    : null;
-
-  let finalSvg = optimization ? optimization.svg : chosenPureVectorSvg;
-  let isHybridRasterSvg = false;
-  let finalEngineUsed: 'vtracer' | 'potrace' | 'hybrid_fidelity' = baseEngine;
-
-  // Avalia qualidade do vetor puro antes de decidir se o Modo 1 (Fidelidade Visual Máxima) incorpora camada híbrida
-  let qualityReport = await evaluateSvgVisualQuality(
-    sourceImage,
-    finalSvg,
-    colorAnalysis.hasTransparency
-  );
-
-  if (outputMode === 'max_visual_fidelity') {
-    const needsHybridForAbsoluteFidelity =
-      !qualityReport ||
-      qualityReport.pixelSimilarityPct < 99.65 ||
-      colorAnalysis.detectedCategory === 'photograph' ||
+    // Variante VTracer B: Passo fino de gradiente / Watershed para artes complexas e degradês ricos
+    if (
       colorAnalysis.detectedCategory === 'gradient_logo' ||
-      colorAnalysis.gradientRatio >= 0.25;
-
-    if (needsHybridForAbsoluteFidelity) {
-      finalSvg = await buildHybridMaxFidelitySvg(
-        finalSvg,
-        alphaCleaned,
+      colorAnalysis.detectedCategory === 'complex_illustration' ||
+      colorAnalysis.detectedCategory === 'photograph'
+    ) {
+      const secondVariant =
+        colorAnalysis.detectedCategory === 'gradient_logo'
+          ? 'fine_gradient_step'
+          : 'watershed_regions';
+      const rawVtFine = await vectorizeWithVTracer(
+        traceInputImage,
+        resolvedParams,
+        colorAnalysis.detectedCategory,
+        secondVariant
+      );
+      const groupedVtFine = organizeVTracerPathsIntoObjects(
+        rawVtFine,
         viewBoxWidth,
         viewBoxHeight
       );
-      isHybridRasterSvg = true;
-      finalEngineUsed = 'hybrid_fidelity';
-      qualityReport = {
-        pixelSimilarityPct: 100,
-        psnrDb: 60,
-        contourFidelityPct: 100,
-        colorFidelityPct: 100,
-        meanAbsoluteError: 0,
-      };
+      const cand3Svg = normalizeSvgForEditorsAndScaling(
+        groupedVtFine,
+        originalWidth,
+        originalHeight,
+        viewBoxWidth,
+        viewBoxHeight,
+        `${gradDefsXml}${typoScaledDefs}`,
+        `${gradLayersXml}${typoScaledGroups}`
+      );
+
+      candidates.push({
+        candidateId: 'vtracer-detalhe-multicamada',
+        label: 'Reconstrução Multi-Camada Detalhada + Gradientes Nativos',
+        engineKind: 'vtracer_rek_gradients',
+        svg: cand3Svg,
+      });
     }
   }
 
   onProgress?.({
-    stageId: 'validate',
-    stageLabel: 'Validando integridade geométrica e compatibilidade SVG...',
-    percent: 96,
+    stageId: 'evaluate_candidates',
+    stageLabel: 'Avaliando candidatos por SSIM, ΔE perceptual, contornos e gradientes...',
+    percent: 84,
   });
 
-  const validation = validateSvgStructure(finalSvg, {
-    allowHybridRaster: outputMode === 'max_visual_fidelity' && isHybridRasterSvg,
-  });
-  if (!validation.valid) {
-    throw new Error(`Falha na validação do SVG gerado: ${validation.errors.join(' ')}`);
-  }
+  const { winner, winnerQuality } = await evaluateAndSelectBestCandidate(
+    sourceImage,
+    candidates,
+    colorAnalysis.hasTransparency,
+    colorAnalysis.gradientRatio
+  );
+
+  const shouldOptimize = params.optimizeSvg !== false;
+  const targetFloatPrecision =
+    resolvedParams.pathSimplification >= 65
+      ? 2
+      : resolvedParams.detailPrecision >= 75 && resolvedParams.pathSimplification <= 30
+        ? 4
+        : 3;
+  const optimization = shouldOptimize
+    ? optimizeVectorSvg(winner.svg, {
+        floatPrecision: targetFloatPrecision,
+      })
+    : null;
+
+  const finalSvg = optimization ? optimization.svg : winner.svg;
 
   onProgress?.({
     stageId: 'validate',
-    stageLabel: 'Vetorização de alta fidelidade concluída.',
+    stageLabel: 'Validando XML 100% vetorial (zero raster, caminhos e gradientes editáveis)...',
+    percent: 96,
+  });
+
+  const validation = validateSvgStructure(finalSvg);
+  if (!validation.valid || validation.hasEmbeddedRaster) {
+    throw new Error(`Falha na validação vetorial estrita: ${validation.errors.join(' ')}`);
+  }
+
+  const technicalLimitationsNote =
+    colorAnalysis.detectedCategory === 'photograph'
+      ? 'Fotografia contínua reconstruída por aproximação vetorial em camadas editáveis (sem incorporar pixels raster). Microtexturas fotográficas de sensor são representadas por regiões geométricas e gradientes aproximados.'
+      : undefined;
+
+  onProgress?.({
+    stageId: 'validate',
+    stageLabel: 'Reconstrução vetorial 100% editável concluída.',
     percent: 100,
   });
 
-  return {
+  const result: VectorizationPipelineResult = {
     svg: finalSvg,
-    rawSvgBeforeOptimization: chosenPureVectorSvg,
-    outputMode,
-    isHybridRasterSvg,
-    engineUsed: finalEngineUsed,
+    rawSvgBeforeOptimization: winner.svg,
+    engineUsed: winner.engineKind,
+    selectedCandidateLabel: winner.label,
     adaptiveStrategyLabel: colorAnalysis.categoryLabel,
+    technicalLimitationsNote,
     effectiveParameters: effectiveSliders,
     colorAnalysis,
     optimization,
     validation,
-    qualityReport,
-    reconstructedGradientCount,
+    qualityReport: winnerQuality,
+    reconstructedGradientCount: validation.gradientCount,
+    reconstructedObjectCount: validation.objectCount,
     detectedTypographyCount: colorAnalysis.typographyRegions.length,
     upscaleFactorUsed: upscaleFactor,
     originalWidth,
@@ -362,11 +425,19 @@ export async function runVectorizationOnRgba(
     wasDownscaled,
     durationMs: Math.round((performance.now() - startedAt) * 100) / 100,
   };
+
+  return { result, candidates };
 }
 
-/**
- * Executa o pipeline completo a partir dos bytes brutos do arquivo (PNG, JPG, JPEG ou WebP).
- */
+export async function runVectorizationOnRgba(
+  sourceImage: RawRgbaImage,
+  params: VectorizationParameters,
+  onProgress?: ProgressCallback
+): Promise<VectorizationPipelineResult> {
+  const { result } = await runVectorizationOnRgbaInternal(sourceImage, params, onProgress);
+  return result;
+}
+
 export async function runVectorizationFromBytes(
   fileBytes: Uint8Array,
   params: VectorizationParameters,

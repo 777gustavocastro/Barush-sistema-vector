@@ -7,9 +7,9 @@ export interface SvgOptimizeSettings {
 }
 
 /**
- * Padroniza cabeçalho XML, namespace, dimensões físicas originais, viewBox escalável
- * e IDs sequenciais nos caminhos (<path id="caminho-N">) para compatibilidade integral
- * com Inkscape, Adobe Illustrator, Figma e navegadores.
+ * Padroniza cabeçalho XML, namespace, dimensões físicas originais, viewBox escalável,
+ * definições (<defs>) de gradientes/clipPaths e IDs únicos em <path> e <g>, garantindo
+ * compatibilidade integral com Adobe Illustrator, Inkscape, Figma e navegadores.
  */
 export function normalizeSvgForEditorsAndScaling(
   rawSvg: string,
@@ -25,6 +25,8 @@ export function normalizeSvgForEditorsAndScaling(
     .replace(/<!DOCTYPE[^>]*>/gi, '')
     .replace(/<\?xml[^>]*\?>/gi, '')
     .trim();
+
+  const defsBlock = extraDefsXml ? `<defs>${extraDefsXml}</defs>` : '';
 
   svg = svg.replace(/<svg\b([^>]*)>/i, (_fullMatch, existingAttrs: string) => {
     let attrs = existingAttrs;
@@ -57,7 +59,7 @@ export function normalizeSvgForEditorsAndScaling(
       attrs += ' preserveAspectRatio="xMidYMid meet"';
     }
 
-    return `<svg${attrs}>${extraDefsXml}`;
+    return `<svg${attrs}>${defsBlock}`;
   });
 
   if (extraOverlayXml) {
@@ -78,8 +80,8 @@ export function normalizeSvgForEditorsAndScaling(
 
 /**
  * Configuração ultra-fiel do SVGO:
- * Preserva 100% da geometria sub-pixel dos caminhos Bézier, <defs> de gradientes nativos,
- * grupos de tipografia e IDs de camadas, sem arredondar alças de curvas quando floatPrecision >= 4.
+ * Preserva integralmente os grupos <g id="objeto-N">, gradientes <linearGradient>/<radialGradient>,
+ * <clipPath>, opacidade e todas as alças de curvas Bézier cúbicas.
  */
 export function createFidelityPreservingSvgoConfig(
   settings: SvgOptimizeSettings = {}
@@ -101,7 +103,10 @@ export function createFidelityPreservingSvgoConfig(
             collapseGroups: false,
             removeUselessDefs: false,
             removeHiddenElems: false,
-            // Em alta precisão (>= 4), desativa reescrita de comandos d="" para preservar curvas Bézier intactas
+            removeUnknownsAndDefaults: {
+              keepDataAttrs: true,
+              keepRoleAttr: true,
+            },
             convertPathData:
               precision >= 4
                 ? false

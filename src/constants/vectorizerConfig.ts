@@ -18,16 +18,16 @@ export const VECTORIZER_PROFILES: ProfileDefinition[] = [
   {
     id: 'auto',
     label: 'Automático',
-    shortTag: 'Padrão inteligente',
+    shortTag: 'Motor inteligente',
     description:
-      'Analisa cores, contraste, gradientes, transparência e detalhes para escolher motor e parâmetros ideais.',
+      'Analisa com OpenCV objetos, contornos, degradês, sombras e tipografia, selecionando o melhor candidato 100% vetorial.',
     defaults: {
-      colorCount: 16,
-      detailPrecision: 80,
-      curveSmoothness: 70,
-      pathSimplification: 26,
-      noiseRemoval: 25,
-      contourSensitivity: 74,
+      colorCount: 256,
+      detailPrecision: 95,
+      curveSmoothness: 68,
+      pathSimplification: 0,
+      noiseRemoval: 0,
+      contourSensitivity: 86,
     },
   },
   {
@@ -35,29 +35,29 @@ export const VECTORIZER_PROFILES: ProfileDefinition[] = [
     label: 'Alta fidelidade',
     shortTag: 'Máximo detalhe',
     description:
-      'Prioriza preservação rigorosa de cores, contornos sutis, formas pequenas e transições cromáticas.',
+      'Paleta 24-bit integral sem redução de cores, microformas, reflexos, gradientes multi-stop e letras em curvas 3×.',
     defaults: {
       colorCount: 256,
-      detailPrecision: 96,
+      detailPrecision: 98,
       curveSmoothness: 64,
       pathSimplification: 0,
       noiseRemoval: 0,
-      contourSensitivity: 88,
+      contourSensitivity: 90,
     },
   },
   {
     id: 'logo_illustration',
     label: 'Logo e ilustração',
-    shortTag: 'Traço limpo',
+    shortTag: 'Objetos e curvas',
     description:
-      'Prioriza curvas Bézier suaves, formas limpas, contornos bem definidos e filtragem de ruídos.',
+      'Prioriza separação limpa em objetos (<g>), curvas Bézier suaves e degradês nativos para Illustrator e Inkscape.',
     defaults: {
-      colorCount: 10,
-      detailPrecision: 82,
-      curveSmoothness: 86,
-      pathSimplification: 42,
-      noiseRemoval: 45,
-      contourSensitivity: 78,
+      colorCount: 192,
+      detailPrecision: 92,
+      curveSmoothness: 76,
+      pathSimplification: 8,
+      noiseRemoval: 8,
+      contourSensitivity: 84,
     },
   },
 ];
@@ -70,7 +70,7 @@ export const ADVANCED_SETTINGS_META: AdvancedSettingMeta[] = [
   {
     key: 'colorCount',
     label: 'Quantidade de cores',
-    description: 'Limite máximo de cores distintas preservadas na paleta vetorial.',
+    description: 'Paleta máxima preservada (valores >= 128 mantêm fidelidade 24-bit sem redução agressiva).',
     min: 2,
     max: 256,
     step: 1,
@@ -79,7 +79,7 @@ export const ADVANCED_SETTINGS_META: AdvancedSettingMeta[] = [
   {
     key: 'detailPrecision',
     label: 'Precisão dos detalhes',
-    description: 'Retenção de microformas, elementos finos e fidelidade entre camadas.',
+    description: 'Retenção de pequenos elementos, pontas de penas, olhos, reflexos e letras.',
     min: 10,
     max: 100,
     step: 1,
@@ -88,7 +88,7 @@ export const ADVANCED_SETTINGS_META: AdvancedSettingMeta[] = [
   {
     key: 'curveSmoothness',
     label: 'Suavidade das curvas',
-    description: 'Interpolação em curvas Bézier contínuas para eliminar serrilhados.',
+    description: 'Ajuste de curvas Bézier cúbicas contínuas sem serrilhamento.',
     min: 0,
     max: 100,
     step: 1,
@@ -97,7 +97,7 @@ export const ADVANCED_SETTINGS_META: AdvancedSettingMeta[] = [
   {
     key: 'pathSimplification',
     label: 'Simplificação dos caminhos',
-    description: 'Reduz nós redundantes para gerar caminhos mais leves sem deformar a arte.',
+    description: 'Reduz apenas nós colineares redundantes sem deformar contornos originais.',
     min: 0,
     max: 100,
     step: 1,
@@ -106,7 +106,7 @@ export const ADVANCED_SETTINGS_META: AdvancedSettingMeta[] = [
   {
     key: 'noiseRemoval',
     label: 'Remoção de ruídos',
-    description: 'Filtra artefatos de compressão e manchas isoladas antes e durante o traçado.',
+    description: 'Filtra artefatos de compressão preservando detalhes pequenos reais.',
     min: 0,
     max: 100,
     step: 1,
@@ -115,7 +115,7 @@ export const ADVANCED_SETTINGS_META: AdvancedSettingMeta[] = [
   {
     key: 'contourSensitivity',
     label: 'Sensibilidade dos contornos',
-    description: 'Detecção de cantos vivos e transições de contraste entre regiões.',
+    description: 'Precisão em extremidades vivas, cantos tipográficos e bordas entre objetos.',
     min: 10,
     max: 100,
     step: 1,
@@ -124,10 +124,10 @@ export const ADVANCED_SETTINGS_META: AdvancedSettingMeta[] = [
 ];
 
 export const PIPELINE_STAGES_ORDER = [
-  { id: 'analyze' as const, label: 'Análise inteligente de cores, contraste e detalhes' },
-  { id: 'preprocess' as const, label: 'Tratamento de transparência, escala e ruídos' },
-  { id: 'trace' as const, label: 'Traçado geométrico de curvas e contornos vetoriais' },
-  { id: 'gradients_typography' as const, label: 'Gradientes nativos e tipografia de alta precisão' },
-  { id: 'optimize' as const, label: 'Otimização fiel de estrutura com SVGO' },
-  { id: 'validate' as const, label: 'Validação de caminhos editáveis e proporções' },
+  { id: 'analyze' as const, label: 'Etapa A: Análise OpenCV de regiões, bordas e cores' },
+  { id: 'segment_objects' as const, label: 'Etapa B: Separação em objetos independentes (<g>)' },
+  { id: 'reconstruct_bezier' as const, label: 'Etapa C: Reconstrução geométrica em curvas Bézier' },
+  { id: 'gradients_typography' as const, label: 'Gradientes SVG nativos e tipografia em caminhos' },
+  { id: 'evaluate_candidates' as const, label: 'Seleção multi-candidato (SSIM, CIE ΔE e contornos)' },
+  { id: 'validate' as const, label: 'Auditoria XML anti-raster e validação editável' },
 ];

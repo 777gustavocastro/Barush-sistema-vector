@@ -3,7 +3,6 @@ import type {
   AdvancedSettings,
   CanvasBackground,
   ComparisonMode,
-  ResultOutputMode,
   SourceImageInfo,
   VectorizationPipelineResult,
   VectorizationProgressEvent,
@@ -33,7 +32,6 @@ export function App() {
   const [uiState, setUIState] = useState<VectorizerUIState>('initial');
   const [sourceImage, setSourceImage] = useState<SourceImageInfo | null>(null);
   const [selectedProfile, setSelectedProfile] = useState<VectorizerProfileId>('auto');
-  const [outputMode, setOutputMode] = useState<ResultOutputMode>('editable_vector');
   const [advancedSettings, setAdvancedSettings] = useState<AdvancedSettings>({
     ...DEFAULT_ADVANCED_SETTINGS,
   });
@@ -48,7 +46,6 @@ export function App() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [hasUnappliedChanges, setHasUnappliedChanges] = useState<boolean>(false);
 
-  // Limpeza completa de ObjectURLs e workers ao desmontar a aplicação
   useEffect(() => {
     const tempManager = tempManagerRef.current;
     return () => {
@@ -62,7 +59,6 @@ export function App() {
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
 
-      // Revoga preview anterior sem vazamento de memória
       if (sourceImage?.previewUrl) {
         tempManagerRef.current.revokeObjectUrl(sourceImage.previewUrl);
       }
@@ -81,7 +77,6 @@ export function App() {
       setZoom(100);
       setComparisonMode('side_by_side');
 
-      // Se estiver no perfil Automático, calibra os controles com a inteligência da imagem recém-enviada
       if (selectedProfile === 'auto') {
         setAdvancedSettings({ ...decoded.colorAnalysis.recommendedParameters });
       }
@@ -165,7 +160,7 @@ export function App() {
     setUIState('processing');
     setProgressEvent({
       stageId: 'analyze',
-      stageLabel: 'Iniciando análise inteligente e worker WebAssembly...',
+      stageLabel: 'Etapa A: Inicializando análise OpenCV e reconstrução vetorial...',
       percent: 8,
     });
 
@@ -174,7 +169,6 @@ export function App() {
         sourceImage.rgbaImage,
         {
           profile: selectedProfile,
-          outputMode,
           engine: 'auto',
           autoTune: false,
           reconstructGradients: true,
@@ -207,7 +201,7 @@ export function App() {
       const msg =
         err instanceof Error
           ? err.message
-          : 'Erro inesperado durante a conversão da imagem para SVG.';
+          : 'Erro inesperado durante a reconstrução vetorial da imagem.';
       setErrorMessage(msg);
       setProgressEvent(null);
       setUIState('error');
@@ -216,17 +210,15 @@ export function App() {
         abortControllerRef.current = null;
       }
     }
-  }, [advancedSettings, outputMode, selectedProfile, sourceImage]);
+  }, [advancedSettings, selectedProfile, sourceImage]);
 
   const handleDownloadSvg = useCallback(() => {
     if (!vectorResult || !sourceImage) return;
 
-    const validation = validateSvgStructure(vectorResult.svg, {
-      allowHybridRaster: vectorResult.isHybridRasterSvg,
-    });
-    if (!validation.valid) {
+    const validation = validateSvgStructure(vectorResult.svg);
+    if (!validation.valid || validation.hasEmbeddedRaster) {
       setErrorMessage(
-        `O arquivo SVG não passou na validação pré-download: ${validation.errors.join(' ')}`
+        `O arquivo SVG foi bloqueado na validação anti-raster pré-download: ${validation.errors.join(' ')}`
       );
       setUIState('error');
       return;
@@ -243,7 +235,6 @@ export function App() {
     anchor.click();
     document.body.removeChild(anchor);
 
-    // Revoga após o disparo do download pelo navegador
     window.setTimeout(() => {
       tempManagerRef.current.revokeObjectUrl(downloadUrl);
     }, 5000);
@@ -254,7 +245,6 @@ export function App() {
       <Header uiState={uiState} />
 
       <main className="flex-1 mx-auto w-full max-w-[1440px] px-4 sm:px-6 lg:px-8 py-5 sm:py-6 space-y-5">
-        {/* 1. ÁREA DE ENVIO */}
         <UploadArea
           uiState={uiState}
           sourceImage={sourceImage}
@@ -262,21 +252,15 @@ export function App() {
           onClearImage={handleClearImage}
         />
 
-        {/* 2. ÁREA DE CONFIGURAÇÕES + 3. ÁREA DE RESULTADOS */}
         <div className="flex flex-col lg:flex-row items-stretch gap-5">
           <SettingsPanel
             uiState={uiState}
             sourceImage={sourceImage}
             selectedProfile={selectedProfile}
-            outputMode={outputMode}
             advancedSettings={advancedSettings}
             isAdvancedOpen={isAdvancedOpen}
             hasUnappliedChanges={hasUnappliedChanges}
             onSelectProfile={handleSelectProfile}
-            onSelectOutputMode={(mode) => {
-              setOutputMode(mode);
-              if (uiState === 'completed') setHasUnappliedChanges(true);
-            }}
             onChangeSetting={handleChangeSetting}
             onToggleAdvanced={() => setIsAdvancedOpen((prev) => !prev)}
             onResetDefaults={handleResetDefaults}

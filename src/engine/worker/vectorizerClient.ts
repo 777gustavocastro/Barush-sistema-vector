@@ -6,6 +6,12 @@ import type {
 } from '../types';
 import type { WorkerVectorizeRequest, WorkerVectorizeResponse } from './vectorizer.worker';
 import { runVectorizationOnRgba } from '../vectorizers/pipelineOrchestrator';
+import {
+  evaluateAndSelectBestCandidate,
+  type VectorSvgCandidateInput,
+} from '../quality/qualityEvaluator';
+import { optimizeVectorSvg } from '../optimization/svgoOptimizer';
+import { validateSvgStructure } from '../validation/fileValidator';
 
 export interface AsyncVectorizeOptions {
   onProgress?: ProgressCallback;
@@ -13,9 +19,9 @@ export interface AsyncVectorizeOptions {
 }
 
 /**
- * Executa a vetorização de forma assíncrona em Web Worker dedicado no navegador
- * (mantendo a interface fluida a 60 FPS sem travar a thread principal),
- * com suporte a cancelamento imediato e liberação de memória WASM.
+ * Executa a reconstrução vetorial em Web Worker dedicado no navegador e, ao receber
+ * os candidatos vetoriais puros, realiza a avaliação perceptual real (SSIM + CIE ΔE + Contornos)
+ * no Canvas nativo do navegador caso o Worker não possua DOM para rasterizar o SVG!
  */
 export async function executeVectorizationAsync(
   image: RawRgbaImage,
@@ -29,7 +35,10 @@ export async function executeVectorizationAsync(
   }
 
   if (typeof Worker !== 'undefined' && typeof window !== 'undefined') {
-    return await new Promise<VectorizationPipelineResult>((resolve, reject) => {
+    const workerOut = await new Promise<{
+      result: VectorizationPipelineResult;
+      candidates: VectorSvgCandidateInput[];
+    }>((resolve, reject) => {
       const worker = new Worker(
         new URL('./vectorizer.worker.ts', import.meta.url),
         { type: 'module' }
@@ -64,7 +73,7 @@ export async function executeVectorizationAsync(
           if (settled) return;
           settled = true;
           cleanup();
-          resolve(msg.result);
+          resolve({ result: msg.result, candidates: msg.candidates });
           return;
         }
 
@@ -85,7 +94,6 @@ export async function executeVectorizationAsync(
         );
       };
 
-      // Faz cópia isolada do buffer para transferência zero-copy (mantendo o buffer original disponível para re-vetorizações!)
       const transferableCopy = new Uint8Array(image.data.byteLength);
       transferableCopy.set(image.data);
 
@@ -100,8 +108,45 @@ export async function executeVectorizationAsync(
 
       worker.postMessage(request, [transferableCopy.buffer]);
     });
+
+    // No navegador, avalia todos os candidatos via Canvas real para selecionar o melhor resultado perceptual!
+    if (!workerOut.result.qualityReport && workerOut.candidates.length > 0) {
+      const { winner, winnerQuality } = await evaluateAndSelectBestCandidate(
+        image,
+        workerOut.candidates,
+        workerOut.result.colorAnalysis.hasTransparency,
+        workerOut.result.colorAnalysis.gradientRatio
+      );
+
+      const shouldOptimize = params.optimizeSvg !== false;
+      const optimization = shouldOptimize
+        ? optimizeVectorSvg(winner.svg, {
+            floatPrecision: workerOut.result.effectiveParameters.detailPrecision >= 75 ? 4 : 3,
+          })
+        : null;
+
+      const finalSvg = optimization ? optimization.svg : winner.svg;
+      const validation = validateSvgStructure(finalSvg);
+      if (!validation.valid || validation.hasEmbeddedRaster) {
+        throw new Error(`Falha na validação vetorial estrita: ${validation.errors.join(' ')}`);
+      }
+
+      return {
+        ...workerOut.result,
+        svg: finalSvg,
+        rawSvgBeforeOptimization: winner.svg,
+        engineUsed: winner.engineKind,
+        selectedCandidateLabel: winner.label,
+        optimization,
+        validation,
+        qualityReport: winnerQuality,
+        reconstructedGradientCount: validation.gradientCount,
+        reconstructedObjectCount: validation.objectCount,
+      };
+    }
+
+    return workerOut.result;
   }
 
-  // Ambiente Node.js (testes/CLI)
   return runVectorizationOnRgba(image, params, onProgress);
 }

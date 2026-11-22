@@ -22,6 +22,9 @@ function rgbToHex(r: number, g: number, b: number): string {
 const CATEGORY_LABELS: Record<DetectedImageCategory, string> = {
   gradient_logo: 'Logo colorido com degradês',
   solid_logo: 'Logo / Ícone com cores sólidas',
+  icon_graphic: 'Ícone / Símbolo vetorial',
+  character_illustration: 'Personagem / Ilustração sombreada',
+  metallic_lighting: 'Superfície metálica / Iluminação',
   complex_illustration: 'Ilustração complexa / Estampa',
   monochrome_drawing: 'Desenho / Arte monocromática',
   typography_text: 'Texto e tipografia em destaque',
@@ -30,17 +33,23 @@ const CATEGORY_LABELS: Record<DetectedImageCategory, string> = {
 
 const STRATEGY_SUMMARIES: Record<DetectedImageCategory, string> = {
   gradient_logo:
-    'Cores 24-bit sem limite + super-amostragem sub-pixel + reconstrução nativa de gradientes SVG e nitidez tipográfica.',
+    'Topologia de fronteiras compartilhadas + espaço perceptual OKLab + gradientes SVG nativos multi-stop e nitidez tipográfica.',
   solid_logo:
-    'Separação nítida de camadas empilhadas + curvas Bézier precisas sem serrilhados e proteção de cantos/pontas.',
+    'Fronteiras compartilhadas sem fendas + curvas Bézier precisas preservando cantos agudos, retas e vazios internos.',
+  icon_graphic:
+    'Geometria exata de retas, arcos e cantos C⁰ + alinhamento sub-pixel para ícones e símbolos.',
+  character_illustration:
+    'Separação anatômica de camadas + preservação de subtons, sombras confinadas por clipPath, olhos e contornos finos.',
+  metallic_lighting:
+    'Gradientes OKLab de alta resolução (23 stops) + focos especulares (fx, fy) e iluminação composta sem banding.',
   complex_illustration:
-    'Paleta 24-bit completa + alta retenção de microformas, sombras, contornos finos e transições cromáticas.',
+    'Paleta perceptual completa + retenção integral de microformas, sombras, reflexos e subdivisões confinadas.',
   monochrome_drawing:
     'Traçado Bézier monocromático sub-pixel de alto contraste preservando traços finos e extremidades.',
   typography_text:
-    'Modo tipográfico dedicado 3× sem simplificação destrutiva, preservando hastes, serifas e olhos das letras.',
+    'Modo tipográfico dedicado 3× letra por letra sem simplificação destrutiva, preservando hastes, serifas e olhos.',
   photograph:
-    'Segmentação hierárquica 24-bit de alta densidade cromática sem posterização forçada.',
+    'Segmentação perceptual OKLab controlada + aproximação vetorial em camadas e gradientes sem posterização brusca.',
 };
 
 function computePercentileFromHist(
@@ -76,23 +85,35 @@ function buildRecommendedParameters(
 
   switch (category) {
     case 'gradient_logo':
+    case 'metallic_lighting':
       return {
-        colorCount: 256, // Sem limite artificial de cores (24-bit completo)
+        colorCount: 256,
         detailPrecision: 96,
         curveSmoothness: 68,
-        pathSimplification: 0, // Sem simplificação destrutiva de pontas/asas/letras
+        pathSimplification: 0,
         noiseRemoval: safeNoiseRemoval,
         contourSensitivity: 86,
       };
 
     case 'solid_logo':
+    case 'icon_graphic':
       return {
-        colorCount: 128,
-        detailPrecision: 92,
-        curveSmoothness: 72,
-        pathSimplification: 6,
+        colorCount: 160,
+        detailPrecision: 94,
+        curveSmoothness: 70,
+        pathSimplification: 4,
         noiseRemoval: safeNoiseRemoval,
-        contourSensitivity: 84,
+        contourSensitivity: 86,
+      };
+
+    case 'character_illustration':
+      return {
+        colorCount: 256,
+        detailPrecision: 96,
+        curveSmoothness: 66,
+        pathSimplification: 0,
+        noiseRemoval: safeNoiseRemoval,
+        contourSensitivity: 88,
       };
 
     case 'typography_text':
@@ -426,7 +447,17 @@ export function analyzeImageColors(image: RawRgbaImage): ColorAnalysisReport {
   const typographyAreaRatio =
     typographyRegions.reduce((acc, r) => acc + r.width * r.height, 0) / Math.max(1, totalPixels);
 
-  // Classificação adaptativa entre as 6 classes estratégicas
+  // Detecta assinatura metálica / iluminação especular intensa (altíssimo contraste + cristas claras + degradês)
+  const specularPeakPixels = lumHistogram.slice(242).reduce((a, b) => a + b, 0);
+  const deepShadowPixels = lumHistogram.slice(0, 45).reduce((a, b) => a + b, 0);
+  const hasMetallicOrLighting =
+    opaqueSamples > 0 &&
+    gradientRatio >= 0.25 &&
+    specularPeakPixels >= opaqueSamples * 0.015 &&
+    deepShadowPixels >= opaqueSamples * 0.04 &&
+    lowSatRatio >= 0.35;
+
+  // Classificação adaptativa entre as 9 classes estratégicas universais
   let detectedCategory: DetectedImageCategory;
   if (hasTypography && typographyAreaRatio >= 0.32 && fineColorBins <= 35) {
     detectedCategory = 'typography_text';
@@ -438,6 +469,16 @@ export function analyzeImageColors(image: RawRgbaImage): ColorAnalysisReport {
     transparentPixelRatio < 0.05
   ) {
     detectedCategory = 'photograph';
+  } else if (hasMetallicOrLighting && fineColorBins >= 12) {
+    detectedCategory = 'metallic_lighting';
+  } else if (
+    width <= 300 &&
+    height <= 300 &&
+    colorClusters.length <= 6 &&
+    fineColorBins <= 18 &&
+    gradientRatio < 0.3
+  ) {
+    detectedCategory = 'icon_graphic';
   } else if (
     (gradientRatio >= 0.26 && fineColorBins >= 14 && (transparentPixelRatio >= 0.04 || colorClusters.length <= 12)) ||
     (fineColorBins >= 16 && fineColorBins <= 90 && gradientRatio >= 0.32)
@@ -445,6 +486,8 @@ export function analyzeImageColors(image: RawRgbaImage): ColorAnalysisReport {
     detectedCategory = 'gradient_logo';
   } else if (colorClusters.length <= 8 && fineColorBins <= 22 && gradientRatio < 0.34) {
     detectedCategory = 'solid_logo';
+  } else if (transparentPixelRatio >= 0.05 && colorClusters.length >= 5 && fineColorBins <= 84) {
+    detectedCategory = 'character_illustration';
   } else {
     detectedCategory = 'complex_illustration';
   }
@@ -472,6 +515,7 @@ export function analyzeImageColors(image: RawRgbaImage): ColorAnalysisReport {
     smallDetailDensity,
     hasTypography,
     typographyRegions,
+    hasMetallicOrLighting,
     isMonochromeCandidate,
     detectedCategory,
     categoryLabel: CATEGORY_LABELS[detectedCategory],

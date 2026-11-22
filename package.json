@@ -11,8 +11,9 @@
     "verify:tools": "tsx scripts/verify-vector-tools.ts",
     "test:bird": "tsx scripts/test-winged-logo-fidelity.ts",
     "test:categories": "tsx scripts/test-all-categories.ts",
+    "test:universal": "tsx scripts/test-universal-reconstruction.ts",
     "test:e2e": "tsx scripts/test-e2e-browser-inkscape.ts",
-    "test": "npm run verify:tools && npm run test:bird && npm run test:categories && npm run test:e2e"
+    "test": "npm run verify:tools && npm run test:bird && npm run test:categories && npm run test:universal && npm run test:e2e"
   },
   "dependencies": {
     "@techstark/opencv-js": "^5.0.0-release.1",

@@ -86,6 +86,16 @@ export function App() {
     [selectedProfile, sourceImage?.previewUrl]
   );
 
+  const handleBeginFileDecode = useCallback(() => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    setSourceImage(null);
+    setVectorResult(null);
+    setProgressEvent(null);
+    setErrorMessage(null);
+    setUIState('initial');
+  }, []);
+
   const handleClearImage = useCallback(() => {
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
@@ -250,6 +260,7 @@ export function App() {
           sourceImage={sourceImage}
           onSelectFile={handleSelectFile}
           onClearImage={handleClearImage}
+          onBeginFileDecode={handleBeginFileDecode}
         />
 
         <div className="flex flex-col lg:flex-row items-stretch gap-5">

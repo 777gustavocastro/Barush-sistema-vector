@@ -1,3 +1,8 @@
+import type {
+  Stage2InspectionReport,
+  VectorReconstructionSceneGraph,
+} from './stage2/reconstructionSceneGraph';
+
 export type SupportedRasterFormat = 'png' | 'jpg' | 'jpeg' | 'webp';
 
 export type VectorEngineKind =
@@ -14,6 +19,9 @@ export type EnginePresetProfile =
 export type DetectedImageCategory =
   | 'gradient_logo'
   | 'solid_logo'
+  | 'icon_graphic'
+  | 'character_illustration'
+  | 'metallic_lighting'
   | 'complex_illustration'
   | 'monochrome_drawing'
   | 'typography_text'
@@ -66,6 +74,7 @@ export interface ColorAnalysisReport {
   smallDetailDensity: number;
   hasTypography: boolean;
   typographyRegions: TypographyRegion[];
+  hasMetallicOrLighting?: boolean;
   isMonochromeCandidate: boolean;
   detectedCategory: DetectedImageCategory;
   categoryLabel: string;
@@ -174,6 +183,8 @@ export interface VectorizationPipelineResult {
   optimization: SvgOptimizationResult | null;
   validation: SvgValidationReport;
   qualityReport?: QualityComparisonReport;
+  sceneGraph?: VectorReconstructionSceneGraph;
+  stage2Report?: Stage2InspectionReport;
   reconstructedGradientCount: number;
   reconstructedObjectCount: number;
   detectedTypographyCount: number;

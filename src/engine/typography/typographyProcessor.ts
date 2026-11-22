@@ -225,6 +225,7 @@ export function detectTypographyRegions(image: RawRgbaImage): TypographyRegion[]
     if (lineGroup.length >= 3) {
       let rx0 = width, ry0 = height, rx1 = 0, ry1 = 0;
       let rSum = 0, gSum = 0, bSum = 0;
+      let highFillSquareCount = 0;
       for (const g of lineGroup) {
         if (g.minX < rx0) rx0 = g.minX;
         if (g.minY < ry0) ry0 = g.minY;
@@ -233,6 +234,22 @@ export function detectTypographyRegions(image: RawRgbaImage): TypographyRegion[]
         rSum += g.rMean;
         gSum += g.gMean;
         bSum += g.bMean;
+        const fillR = g.area / Math.max(1, g.width * g.height);
+        const sqAspect = g.width / Math.max(1, g.height);
+        if (fillR > 0.74 && sqAspect >= 0.78 && sqAspect <= 1.28) {
+          highFillSquareCount++;
+        }
+      }
+
+      // Rejeita grades geométricas periódicas (ex.: matriz de blocos/círculos sólidos repetitivos)
+      if (highFillSquareCount >= lineGroup.length * 0.75) {
+        continue;
+      }
+
+      const lineW = rx1 - rx0 + 1;
+      const lineH = ry1 - ry0 + 1;
+      if (lineW < lineH * 1.9) {
+        continue;
       }
 
       const inkR = rSum / lineGroup.length;
@@ -246,6 +263,7 @@ export function detectTypographyRegions(image: RawRgbaImage): TypographyRegion[]
       const rh = Math.min(height - y, ry1 - ry0 + 1 + pad * 2);
 
       let borderR = 0, borderG = 0, borderB = 0, borderCount = 0;
+      let borderCleanBgCount = 0;
       const borderSamples: Array<[number, number]> = [];
       for (let bx = x; bx < x + rw; bx += 2) {
         borderSamples.push([bx, y], [bx, y + rh - 1]);
@@ -260,6 +278,9 @@ export function detectTypographyRegions(image: RawRgbaImage): TypographyRegion[]
           borderG += data[idx + 1];
           borderB += data[idx + 2];
           borderCount++;
+          if (Math.hypot(data[idx] - inkR, data[idx + 1] - inkG, data[idx + 2] - inkB) >= 42) {
+            borderCleanBgCount++;
+          }
         }
       }
 
@@ -267,8 +288,37 @@ export function detectTypographyRegions(image: RawRgbaImage): TypographyRegion[]
       const bgG = borderCount > 0 ? borderG / borderCount : 255;
       const bgB = borderCount > 0 ? borderB / borderCount : 255;
       const inkBgContrast = Math.hypot(inkR - bgR, inkG - bgG, inkB - bgB);
+      const cleanPerimeterRatio = borderCount > 0 ? borderCleanBgCount / borderCount : 1;
 
-      if (inkBgContrast >= 60) {
+      // Rejeita caixas que contenham elementos internos de uma 3ª cor distinta (ex.: ícones coloridos dentro de molduras!)
+      let thirdColorPixels = 0;
+      let totalBoxSamples = 0;
+      for (let by = y; by < y + rh; by += 2) {
+        for (let bx = x; bx < x + rw; bx += 2) {
+          const pIdx = (by * width + bx) * 4;
+          if (data[pIdx + 3] < 150) continue;
+          totalBoxSamples++;
+          const pr = data[pIdx];
+          const pg = data[pIdx + 1];
+          const pb = data[pIdx + 2];
+          // Verifica se o pixel NÃO está sobre o segmento linear [bg, ink] (resíduo ortogonal > 32)
+          const vx = inkR - bgR;
+          const vy = inkG - bgG;
+          const vz = inkB - bgB;
+          const denom = Math.max(1, vx * vx + vy * vy + vz * vz);
+          const t = Math.max(
+            0,
+            Math.min(1, ((pr - bgR) * vx + (pg - bgG) * vy + (pb - bgB) * vz) / denom)
+          );
+          const ortho = Math.hypot(pr - (bgR + t * vx), pg - (bgG + t * vy), pb - (bgB + t * vz));
+          if (ortho > 68) {
+            thirdColorPixels++;
+          }
+        }
+      }
+      const thirdColorRatio = totalBoxSamples > 0 ? thirdColorPixels / totalBoxSamples : 0;
+
+      if (inkBgContrast >= 60 && cleanPerimeterRatio >= 0.72 && thirdColorRatio < 0.035) {
         regions.push({
           id: `tipografia-${regions.length + 1}`,
           x,
@@ -286,6 +336,88 @@ export function detectTypographyRegions(image: RawRgbaImage): TypographyRegion[]
   }
 
   return regions;
+}
+
+/**
+ * Gera uma máscara binária exata (`width × height`) cobrindo APENAS os pixels de tinta das letras
+ * detectadas (+ 1px de halo de anti-aliasing), permitindo curar o substrato sob o texto sem jamais
+ * furar caixas retangulares em faixas, escudos ou fundos coloridos!
+ */
+export function buildExactTypographyInkMask(
+  image: RawRgbaImage,
+  regions: TypographyRegion[],
+  scaleFromOriginal = 1
+): Uint8Array | undefined {
+  if (regions.length === 0) return undefined;
+  const { width, height, data } = image;
+  const mask = new Uint8Array(width * height);
+  let marked = 0;
+
+  for (const reg of regions) {
+    const x0 = Math.max(0, Math.floor(reg.x * scaleFromOriginal) - 2);
+    const y0 = Math.max(0, Math.floor(reg.y * scaleFromOriginal) - 2);
+    const x1 = Math.min(width, Math.ceil((reg.x + reg.width) * scaleFromOriginal) + 2);
+    const y1 = Math.min(height, Math.ceil((reg.y + reg.height) * scaleFromOriginal) + 2);
+
+    const [inkR, inkG, inkB] = hexToRgbTuple(reg.inkHex);
+    const [bgR, bgG, bgB] = hexToRgbTuple(reg.backgroundHex);
+
+    const vx = inkR - bgR;
+    const vy = inkG - bgG;
+    const vz = inkB - bgB;
+    const segLenSq = Math.max(1, vx * vx + vy * vy + vz * vz);
+
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        const px = y * width + x;
+        const idx = px * 4;
+        if (data[idx + 3] < 30) continue;
+        const pr = data[idx];
+        const pg = data[idx + 1];
+        const pb = data[idx + 2];
+        const dInk = Math.hypot(pr - inkR, pg - inkG, pb - inkB);
+        const dBg = Math.hypot(pr - bgR, pg - bgG, pb - bgB);
+        const t = ((pr - bgR) * vx + (pg - bgG) * vy + (pb - bgB) * vz) / segLenSq;
+        const projR = bgR + Math.max(0, Math.min(1, t)) * vx;
+        const projG = bgG + Math.max(0, Math.min(1, t)) * vy;
+        const projB = bgB + Math.max(0, Math.min(1, t)) * vz;
+        const ortho = Math.hypot(pr - projR, pg - projG, pb - projB);
+
+        // Captura 100% do núcleo e toda a rampa gama/sub-pixel de anti-aliasing (>= 1.8% de tinta)
+        if ((t >= 0.018 && dBg >= 3 && ortho <= 55) || (dInk < dBg * 1.45 && dBg >= 5)) {
+          mask[px] = 1;
+          marked++;
+        }
+      }
+    }
+  }
+
+  if (marked === 0) return undefined;
+
+  // Dilatação morfológica de 3px garante 0% de halo residual nas bordas das letras antes do inpainting!
+  let curr = mask;
+  for (let pass = 0; pass < 3; pass++) {
+    const dilated = new Uint8Array(curr);
+    for (let y = 1; y < height - 1; y++) {
+      const row = y * width;
+      for (let x = 1; x < width - 1; x++) {
+        const p = row + x;
+        if (curr[p]) {
+          dilated[p - 1] = 1;
+          dilated[p + 1] = 1;
+          dilated[p - width] = 1;
+          dilated[p + width] = 1;
+          dilated[p - width - 1] = 1;
+          dilated[p - width + 1] = 1;
+          dilated[p + width - 1] = 1;
+          dilated[p + width + 1] = 1;
+        }
+      }
+    }
+    curr = dilated;
+  }
+
+  return curr;
 }
 
 interface IsolatedLetterBlob {
@@ -469,10 +601,41 @@ export async function reconstructHighPrecisionTypographySvg(
 
       if (dList.length === 0) continue;
 
-      // Verifica se a letra possui cor sólida ou degradê próprio
+      // Amostra apenas o núcleo interior da letra (erodido pelo fator de supersampling) para
+      // não confundir a rampa de anti-aliasing da borda com um falso gradiente radial na letra!
+      const corePixelsBuf: number[] = [];
+      const erodeR = Math.max(1, superFactor);
+      for (let p = 0; p < letter.pixels.length; p++) {
+        const px = letter.pixels[p];
+        const lx = (px % uw) - lx0;
+        const ly = Math.floor(px / uw) - ly0;
+        let isInterior = true;
+        for (let dy = -erodeR; dy <= erodeR && isInterior; dy++) {
+          const ny = ly + dy;
+          if (ny < 0 || ny >= lh) {
+            isInterior = false;
+            break;
+          }
+          for (let dx = -erodeR; dx <= erodeR; dx++) {
+            const nx = lx + dx;
+            if (nx < 0 || nx >= lw || !localMask[ny * lw + nx]) {
+              isInterior = false;
+              break;
+            }
+          }
+        }
+        if (isInterior) {
+          corePixelsBuf.push(px);
+        }
+      }
+
+      const sampleTyped =
+        corePixelsBuf.length >= 12 ? Int32Array.from(corePixelsBuf) : upscaledPxTyped;
+
+      // Verifica se a letra possui cor sólida genuína ou degradê próprio no núcleo da tinta
       const fillFit = fitRegionSvgFill(
-        upscaledPxTyped,
-        upscaledPxTyped.length,
+        sampleTyped,
+        sampleTyped.length,
         letter.minX,
         letter.minY,
         letter.maxX,
@@ -482,8 +645,8 @@ export async function reconstructHighPrecisionTypographySvg(
         `grad-letra-${rIdx + 1}-${lIdx + 1}`
       );
 
-      let fillAttr = reg.inkHex;
-      if (fillFit.kind !== 'solid' && fillFit.defsXml) {
+      let fillAttr = fillFit.kind === 'solid' ? fillFit.fillValue || reg.inkHex : reg.inkHex;
+      if (fillFit.kind !== 'solid' && fillFit.defsXml && corePixelsBuf.length >= 24) {
         // Ajusta coordenadas do gradiente da letra somando (baseOffsetX, baseOffsetY)
         const shiftedDefs = fillFit.defsXml
           .replace(/\bx1="([^"]+)"/, (_, v) => `x1="${(Number(v) + baseOffsetX).toFixed(2)}"`)
@@ -491,23 +654,67 @@ export async function reconstructHighPrecisionTypographySvg(
           .replace(/\bx2="([^"]+)"/, (_, v) => `x2="${(Number(v) + baseOffsetX).toFixed(2)}"`)
           .replace(/\by2="([^"]+)"/, (_, v) => `y2="${(Number(v) + baseOffsetY).toFixed(2)}"`)
           .replace(/\bcx="([^"]+)"/, (_, v) => `cx="${(Number(v) + baseOffsetX).toFixed(2)}"`)
-          .replace(/\bcy="([^"]+)"/, (_, v) => `cy="${(Number(v) + baseOffsetY).toFixed(2)}"`);
+          .replace(/\bcy="([^"]+)"/, (_, v) => `cy="${(Number(v) + baseOffsetY).toFixed(2)}"`)
+          .replace(/\bfx="([^"]+)"/, (_, v) => `fx="${(Number(v) + baseOffsetX).toFixed(2)}"`)
+          .replace(/\bfy="([^"]+)"/, (_, v) => `fy="${(Number(v) + baseOffsetY).toFixed(2)}"`);
         defsList.push(shiftedDefs);
         fillAttr = fillFit.fillValue;
       }
 
       // Combina subpaths externos + olhos internos (ex: A, B, O, R, e) em um único <path> composto por letra!
       const compoundD = dList.join(' ');
+      const subPathMoves = (compoundD.match(/M[\s\d.-]/g) ?? []).length;
+      const evenOddAttr = subPathMoves > 1 ? ' fill-rule="evenodd"' : '';
       letterPathCount++;
       letterPathsXml.push(
-        `<path id="letra-${rIdx + 1}-${lIdx + 1}" fill="${fillAttr}" d="${compoundD}"/>`
+        `<path id="letra-${rIdx + 1}-${lIdx + 1}" fill="${fillAttr}"${evenOddAttr} d="${compoundD}"/>`
       );
     }
 
     if (letterPathsXml.length > 0) {
+      // Estima características tipográficas de referência (peso, inclinação e espaçamento médio)
+      let totalFillRatio = 0;
+      let gapSum = 0;
+      let gapCount = 0;
+      let slantSum = 0;
+      for (let k = 0; k < letters.length; k++) {
+        const L = letters[k];
+        const wL = Math.max(1, L.maxX - L.minX + 1);
+        const hL = Math.max(1, L.maxY - L.minY + 1);
+        totalFillRatio += L.pixels.length / (wL * hL);
+        if (k > 0) {
+          gapSum += (L.minX - letters[k - 1].maxX) * elemScale;
+          gapCount++;
+        }
+        // Estima inclinação itálica comparando centroide X do terço superior vs terço inferior
+        let topX = 0, topN = 0, botX = 0, botN = 0;
+        const yTopLim = L.minY + hL * 0.35;
+        const yBotLim = L.maxY - hL * 0.35;
+        for (const p of L.pixels) {
+          const py = Math.floor(p / uw);
+          const px = p % uw;
+          if (py <= yTopLim) {
+            topX += px;
+            topN++;
+          } else if (py >= yBotLim) {
+            botX += px;
+            botN++;
+          }
+        }
+        if (topN > 0 && botN > 0 && hL >= 9) {
+          slantSum += (topX / topN - botX / botN) / hL;
+        }
+      }
+
+      const avgFill = totalFillRatio / letters.length;
+      const estimatedWeight = avgFill >= 0.44 ? 'bold' : avgFill <= 0.24 ? 'light' : 'regular';
+      const avgSlant = slantSum / letters.length;
+      const estimatedStyle = Math.abs(avgSlant) >= 0.14 ? 'italic' : 'normal';
+      const avgKerning = gapCount > 0 ? Number((gapSum / gapCount).toFixed(2)) : 0;
+
       const objId = `objeto-${startingObjectIndex + rIdx}`;
       groups.push(
-        `<g id="${objId}" data-tipo="tipografia-vetorial" data-letras="${letterPathsXml.length}">${letterPathsXml.join('')}</g>`
+        `<g id="${objId}" data-tipo="tipografia-vetorial" data-letras="${letterPathsXml.length}" data-peso="${estimatedWeight}" data-inclinacao="${estimatedStyle}" data-espacamento-medio="${avgKerning}">${letterPathsXml.join('')}</g>`
       );
     }
   }

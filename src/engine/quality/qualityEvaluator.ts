@@ -395,8 +395,15 @@ export async function evaluateAndSelectBestCandidate(
   const summaries: CandidateEvaluationSummary[] = [];
   const reports: Array<QualityComparisonReport | undefined> = [];
 
-  for (const cand of candidates) {
-    const struct = validateSvgStructure(cand.svg);
+  const structList = candidates.map((cand) => validateSvgStructure(cand.svg));
+  const minValidPathCount = structList.reduce((acc, s) => {
+    if (!s.valid || s.hasEmbeddedRaster || s.pathCount <= 0) return acc;
+    return Math.min(acc, s.pathCount);
+  }, Number.POSITIVE_INFINITY);
+
+  for (let cIdx = 0; cIdx < candidates.length; cIdx++) {
+    const cand = candidates[cIdx];
+    const struct = structList[cIdx];
     if (!struct.valid || struct.hasEmbeddedRaster) {
       reports.push(undefined);
       continue;
@@ -406,16 +413,27 @@ export async function evaluateAndSelectBestCandidate(
     reports.push(q);
     if (!q) continue;
 
-    // Pontuação composta perceptual + estrutural (valoriza gradientes nativos reais e penaliza posterização em centenas de fragmentos sólidos)
+    // Pontuação composta perceptual + estrutural (valoriza gradientes nativos reais, topologia limpa e penaliza fragmentação de anti-aliasing)
     const nativeGradBonus =
       sourceGradientRatio >= 0.2 && struct.gradientCount >= 4
         ? Math.min(5.0, 2.0 + struct.gradientCount * 0.35)
         : 0;
+    const topologyCleanBonus =
+      cand.engineKind === 'opencv_bezier_gradients' && q.ssimPct >= 97.2 && q.colorFidelityPct >= 97.0
+        ? 1.55
+        : 0;
+    const relativeBloatRatio =
+      Number.isFinite(minValidPathCount) && minValidPathCount > 0
+        ? struct.pathCount / Math.max(4, minValidPathCount)
+        : 1;
+    const relativeFragmentationPenalty =
+      relativeBloatRatio > 3.2 ? Math.min(4.5, (relativeBloatRatio - 3.2) * 0.38) : 0;
+
     const fragmentationThreshold = sourceGradientRatio >= 0.2 ? 220 : 1200;
     const excessiveFragmentationPenalty =
-      struct.pathCount > fragmentationThreshold
+      (struct.pathCount > fragmentationThreshold
         ? Math.min(8.5, (struct.pathCount - fragmentationThreshold) / 95)
-        : 0;
+        : 0) + relativeFragmentationPenalty;
 
     const compositeScore = Number(
       (
@@ -423,7 +441,8 @@ export async function evaluateAndSelectBestCandidate(
         q.colorFidelityPct * 0.3 +
         q.contourFidelityPct * 0.2 +
         q.gradientContinuityPct * 0.16 +
-        nativeGradBonus -
+        nativeGradBonus +
+        topologyCleanBonus -
         excessiveFragmentationPenalty
       ).toFixed(2)
     );

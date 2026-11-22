@@ -345,6 +345,7 @@ async function main() {
       await fs.access(birdRefPath);
       await page.setViewportSize({ width: 1440, height: 980 });
       await page.locator('[data-testid="file-upload-input"]').setInputFiles(birdRefPath);
+      await page.getByText('passaro-colorido-referencia.png').waitFor({ state: 'visible', timeout: 15000 });
       await page.locator('[data-testid="profile-auto"]').click();
       await page.locator('[data-testid="start-vectorize-button"]').click();
       await Promise.race([

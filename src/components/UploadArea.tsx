@@ -24,6 +24,7 @@ interface UploadAreaProps {
   sourceImage: SourceImageInfo | null;
   onSelectFile: (file: File, decoded: Omit<SourceImageInfo, 'previewUrl'>) => void;
   onClearImage: () => void;
+  onBeginFileDecode?: () => void;
 }
 
 export function formatBytes(bytes: number): string {
@@ -52,6 +53,7 @@ export const UploadArea: React.FC<UploadAreaProps> = ({
   sourceImage,
   onSelectFile,
   onClearImage,
+  onBeginFileDecode,
 }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -74,6 +76,7 @@ export const UploadArea: React.FC<UploadAreaProps> = ({
 
     setIsDecoding(true);
     setUploadError(null);
+    onBeginFileDecode?.();
 
     try {
       const arrayBuffer = await file.arrayBuffer();

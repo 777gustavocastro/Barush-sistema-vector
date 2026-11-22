@@ -32,6 +32,11 @@ import {
   evaluateAndSelectBestCandidate,
   type VectorSvgCandidateInput,
 } from '../quality/qualityEvaluator';
+import {
+  getRegisteredStage2Hooks,
+  type Stage2InspectionReport,
+  type VectorReconstructionSceneGraph,
+} from '../stage2/reconstructionSceneGraph';
 
 function isStrictlyMonochromeRequest(
   params: VectorizationParameters,
@@ -136,6 +141,8 @@ export async function runVectorizationOnRgbaInternal(
 
   const candidates: VectorSvgCandidateInput[] = [];
   let upscaleFactor: 1 | 2 | 3 = 1;
+  let primarySceneGraph: VectorReconstructionSceneGraph | undefined;
+  let stage2Report: Stage2InspectionReport | undefined;
 
   if (
     isStrictlyMonochromeRequest(
@@ -164,6 +171,49 @@ export async function runVectorizationOnRgbaInternal(
       engineKind: 'potrace_bezier',
       svg: monoNorm,
     });
+
+    const totalWorkPixels = denoisedImage.width * denoisedImage.height;
+    if (totalWorkPixels <= 1_800_000) {
+      const objRec = await reconstructImageAsEditableObjects(
+        denoisedImage,
+        resolvedParams,
+        colorAnalysis.detectedCategory,
+        '',
+        '',
+        []
+      );
+      primarySceneGraph = objRec.sceneGraph;
+      let objSceneSvg = objRec.svg;
+
+      const stage2Hooks = getRegisteredStage2Hooks();
+      for (const hook of stage2Hooks) {
+        const report = await hook.inspectScene(primarySceneGraph, denoisedImage, null);
+        stage2Report = report;
+        if (!report.passed && hook.autoRepairScene) {
+          const repaired = await hook.autoRepairScene(primarySceneGraph, report, denoisedImage);
+          if (repaired) {
+            primarySceneGraph = repaired;
+            objSceneSvg = repaired.svgMarkup;
+          }
+        }
+      }
+
+      if (resolvedParams.engine === 'auto') {
+        const candObjMono = normalizeSvgForEditorsAndScaling(
+          objSceneSvg,
+          originalWidth,
+          originalHeight,
+          denoisedImage.width,
+          denoisedImage.height
+        );
+        candidates.push({
+          candidateId: 'opencv-topologia-bezier-gradientes',
+          label: 'Topologia Planar OKLab + Objetos de Traço Editáveis',
+          engineKind: 'opencv_bezier_gradients',
+          svg: candObjMono,
+        });
+      }
+    }
   } else {
     onProgress?.({
       stageId: 'segment_objects',
@@ -190,26 +240,55 @@ export async function runVectorizationOnRgbaInternal(
       typoBaseGroups = typoRes.groupsXml;
     }
 
-    // CANDIDATO 1: Reconstrução Orientada a Objetos OpenCV + Curvas Bézier Cúbicas + Gradientes SVG Nativos Multi-Stop
+    // CANDIDATO 1: Motor Universal Topológico (OpenCV + OKLab + Fronteiras Compartilhadas + Bézier + Gradientes SVG)
     const totalWorkPixels = denoisedImage.width * denoisedImage.height;
-    if (totalWorkPixels <= 950_000) {
+    if (totalWorkPixels <= 1_800_000) {
       onProgress?.({
         stageId: 'reconstruct_bezier',
-        stageLabel: 'Etapa C: Reconstruindo objetos editáveis, curvas Bézier e gradientes SVG nativos...',
+        stageLabel: 'Etapa C: Reconstruindo topologia planar, curvas Bézier e gradientes SVG nativos...',
         percent: 50,
       });
 
+      const scaleOrigToWork = denoisedImage.width / originalWidth;
+      const scaledTypoBoxes =
+        scaleOrigToWork === 1
+          ? colorAnalysis.typographyRegions
+          : colorAnalysis.typographyRegions.map((tr) => ({
+              ...tr,
+              x: Math.round(tr.x * scaleOrigToWork),
+              y: Math.round(tr.y * scaleOrigToWork),
+              width: Math.max(2, Math.round(tr.width * scaleOrigToWork)),
+              height: Math.max(2, Math.round(tr.height * scaleOrigToWork)),
+            }));
+
+      let objSceneSvg = '';
       const objRec = await reconstructImageAsEditableObjects(
         denoisedImage,
         resolvedParams,
         colorAnalysis.detectedCategory,
         typoBaseDefs,
         typoBaseGroups,
-        colorAnalysis.typographyRegions
+        scaledTypoBoxes
       );
+      primarySceneGraph = objRec.sceneGraph;
+      objSceneSvg = objRec.svg;
+
+      // Executa hooks modulares da Etapa 2 caso registrados (preparado para inspeção/auto-reparo iterativo)
+      const stage2Hooks = getRegisteredStage2Hooks();
+      for (const hook of stage2Hooks) {
+        const report = await hook.inspectScene(primarySceneGraph, denoisedImage, null);
+        stage2Report = report;
+        if (!report.passed && hook.autoRepairScene) {
+          const repaired = await hook.autoRepairScene(primarySceneGraph, report, denoisedImage);
+          if (repaired) {
+            primarySceneGraph = repaired;
+            objSceneSvg = repaired.svgMarkup;
+          }
+        }
+      }
 
       const cand1Svg = normalizeSvgForEditorsAndScaling(
-        objRec.svg,
+        objSceneSvg,
         originalWidth,
         originalHeight,
         denoisedImage.width,
@@ -217,8 +296,8 @@ export async function runVectorizationOnRgbaInternal(
       );
 
       candidates.push({
-        candidateId: 'opencv-objetos-gradientes',
-        label: 'OpenCV Objetos + Bézier + Gradientes SVG Nativos',
+        candidateId: 'opencv-topologia-bezier-gradientes',
+        label: 'Topologia Planar OKLab + Bézier + Gradientes SVG Nativos',
         engineKind: 'opencv_bezier_gradients',
         svg: cand1Svg,
       });
@@ -414,6 +493,8 @@ export async function runVectorizationOnRgbaInternal(
     optimization,
     validation,
     qualityReport: winnerQuality,
+    sceneGraph: primarySceneGraph,
+    stage2Report,
     reconstructedGradientCount: validation.gradientCount,
     reconstructedObjectCount: validation.objectCount,
     detectedTypographyCount: colorAnalysis.typographyRegions.length,

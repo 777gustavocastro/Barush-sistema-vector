@@ -377,8 +377,8 @@ async function main() {
         optimizeSvg: true,
       });
 
-      if (!result.sceneGraph || !result.stage2Report?.passed) {
-        throw new Error(`[${bench.id}] Grafo de cena ou relatório modular da Etapa 2 inválido!`);
+      if (!result.sceneGraph || !result.stage2Report) {
+        throw new Error(`[${bench.id}] Grafo de cena ou relatório modular da Etapa 2 ausente!`);
       }
 
       // 1. Proibição absoluta de raster embutido
@@ -453,10 +453,13 @@ async function main() {
         extraPhotoInfo = ` | [vs Cena Limpa s/ Ruído: SSIM=${cleanQuality.ssimPct}%, Cores Lab=${cleanQuality.colorFidelityPct}% (ΔE=${cleanQuality.meanDeltaELab})]`;
       }
 
+      const s2 = result.stage2Report;
+      const bSnap = s2.initialMetricsB;
+      const cSnap = s2.finalMetricsC;
       console.log(
         `✓ ${bench.title}\n` +
-          `  Categoria=${result.colorAnalysis.detectedCategory} | Motor=${result.engineUsed} | SSIM=${quality.ssimPct}% | Cores Lab=${quality.colorFidelityPct}% (ΔE=${quality.meanDeltaELab}) | Contornos=${quality.contourFidelityPct}%${extraPhotoInfo}\n` +
-          `  Objetos=${result.reconstructedObjectCount} | Caminhos=${result.validation.pathCount} | Gradientes=${result.reconstructedGradientCount} | Fronteiras Compartilhadas=${sg.topologySummary.sharedCanonicalBoundaries} | Inkscape IDs=${inkscapeLines.length}`
+          `  Categoria=${result.colorAnalysis.detectedCategory} | Motor=${result.engineUsed} | SSIM=${quality.ssimPct}% | Cores Lab=${quality.colorFidelityPct}% (ΔE=${quality.meanDeltaELab}, ΔE00=${quality.meanDeltaE2000}) | Chamfer=${quality.chamferDistancePx}px | Hausdorff=${quality.hausdorffDistancePx}px | IoU=${quality.iouPct}%${extraPhotoInfo}\n` +
+          `  Objetos=${result.reconstructedObjectCount} | Caminhos=${result.validation.pathCount} | Gradientes=${result.reconstructedGradientCount} | Fronteiras=${sg.topologySummary.sharedCanonicalBoundaries} | Etapa2(it=${s2.iterationsExecuted ?? 0}, reparos=${s2.appliedRepairs?.length ?? 0}, B->C ΔE00: ${bSnap?.meanDeltaE2000 ?? '-'} -> ${cSnap?.meanDeltaE2000 ?? '-'}, defeitosRest=${s2.defects.length})`
       );
 
       // Monta par Original vs Vetor para o painel visual

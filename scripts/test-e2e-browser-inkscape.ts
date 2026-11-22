@@ -198,9 +198,16 @@ async function main() {
 
     const objMetricText = await page.locator('[data-testid="metric-objects"]').innerText();
     const ssimMetricText = await page.locator('[data-testid="metric-ssim"]').innerText();
-    if (!Number(objMetricText) || !ssimMetricText.includes('%')) {
-      throw new Error(`Métricas estruturais/SSIM ausentes na UI: obj=${objMetricText}, ssim=${ssimMetricText}`);
+    const ciedeMetricText = await page.locator('[data-testid="metric-ciede2000"]').innerText();
+    if (!Number(objMetricText) || !ssimMetricText.includes('%') || !ciedeMetricText.includes('ΔE₀₀')) {
+      throw new Error(
+        `Métricas estruturais/SSIM/CIEDE2000 ausentes na UI: obj=${objMetricText}, ssim=${ssimMetricText}, ciede=${ciedeMetricText}`
+      );
     }
+
+    await page.locator('[data-testid="toggle-stage2-report"]').click();
+    await page.locator('[data-testid="stage2-detailed-panel"]').waitFor({ state: 'visible' });
+    await page.locator('[data-testid="toggle-stage2-report"]').click();
 
     await page.locator('[data-testid="mode-side-by-side"]').click();
     await page.locator('[data-testid="zoom-in-button"]').click();

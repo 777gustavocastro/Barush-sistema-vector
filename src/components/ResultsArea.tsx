@@ -116,6 +116,7 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
   const [highlightPaths, setHighlightPaths] = useState(false);
   const [detailLoupeEnabled, setDetailLoupeEnabled] = useState(false);
   const [loupeCoords, setLoupeCoords] = useState<{ xPct: number; yPct: number } | null>(null);
+  const [showStage2Details, setShowStage2Details] = useState(false);
 
   const hasResult = uiState === 'completed' && vectorResult !== null;
   const isProcessing = uiState === 'processing';
@@ -518,33 +519,172 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
 
             {vectorResult.qualityReport && (
               <>
-                <div className="rounded-lg bg-zinc-950/80 border border-emerald-500/25 px-2.5 py-1.5">
+                <div
+                  title="SSIM (Structural Similarity Index em janelas 8×8): mede fidelidade estrutural e luminância local (100% = estrutura idêntica)."
+                  className="rounded-lg bg-zinc-950/80 border border-emerald-500/25 px-2.5 py-1.5"
+                >
                   <span className="block text-[10px] text-zinc-500">SSIM</span>
                   <span data-testid="metric-ssim" className="font-mono font-semibold text-emerald-300">
                     {vectorResult.qualityReport.ssimPct}%
                   </span>
                 </div>
-                <div className="rounded-lg bg-zinc-950/80 border border-emerald-500/25 px-2.5 py-1.5">
-                  <span className="block text-[10px] text-zinc-500">Cores (CIE Lab)</span>
-                  <span className="font-mono font-semibold text-emerald-300">
-                    {vectorResult.qualityReport.colorFidelityPct}% (ΔE {vectorResult.qualityReport.meanDeltaELab})
+                <div
+                  title="CIEDE2000 (ΔE₀₀): padrão perceptual internacional ISO/CIE. Valores ΔE₀₀ < 1.0 são imperceptíveis ao olho humano."
+                  className="rounded-lg bg-zinc-950/80 border border-emerald-500/25 px-2.5 py-1.5"
+                >
+                  <span className="block text-[10px] text-zinc-500">Cores (ΔE₀₀)</span>
+                  <span data-testid="metric-ciede2000" className="font-mono font-semibold text-emerald-300">
+                    {vectorResult.qualityReport.colorFidelityPct}% (ΔE₀₀{' '}
+                    {vectorResult.qualityReport.meanDeltaE2000 ?? vectorResult.qualityReport.meanDeltaELab})
                   </span>
                 </div>
-                <div className="rounded-lg bg-zinc-950/80 border border-emerald-500/25 px-2.5 py-1.5">
+                <div
+                  title="Fidelidade geométrica de contornos (Sobel F1 + Distância média bidirecional de Chamfer em pixels)."
+                  className="rounded-lg bg-zinc-950/80 border border-emerald-500/25 px-2.5 py-1.5"
+                >
                   <span className="block text-[10px] text-zinc-500">Contornos</span>
-                  <span className="font-mono font-semibold text-emerald-300">
+                  <span data-testid="metric-contours" className="font-mono font-semibold text-emerald-300">
                     {vectorResult.qualityReport.contourFidelityPct}%
+                    {vectorResult.qualityReport.chamferDistancePx !== undefined
+                      ? ` (${vectorResult.qualityReport.chamferDistancePx}px)`
+                      : ''}
                   </span>
                 </div>
-                <div className="rounded-lg bg-zinc-950/80 border border-emerald-500/25 px-2.5 py-1.5">
-                  <span className="block text-[10px] text-zinc-500">Degradês</span>
-                  <span className="font-mono font-semibold text-emerald-300">
-                    {vectorResult.qualityReport.gradientContinuityPct}%
+                <div
+                  title="Sobreposição de silhueta (IoU) e Relação Sinal-Ruído de Pico (PSNR em dB)."
+                  className="rounded-lg bg-zinc-950/80 border border-emerald-500/25 px-2.5 py-1.5"
+                >
+                  <span className="block text-[10px] text-zinc-500">IoU · PSNR</span>
+                  <span data-testid="metric-iou-psnr" className="font-mono font-semibold text-emerald-300">
+                    {vectorResult.qualityReport.iouPct ?? vectorResult.qualityReport.gradientContinuityPct}% ·{' '}
+                    {vectorResult.qualityReport.psnrDb}dB
                   </span>
                 </div>
               </>
             )}
           </div>
+
+          {/* Barra de Diagnóstico Científico A vs B vs C e Explicação de Métricas Reais (Prompt 02 Seções 10, 11 e 14) */}
+          {vectorResult.qualityReport && (
+            <div className="rounded-lg border border-zinc-800/90 bg-zinc-950/75 px-3 py-2 text-[11px] space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2 text-zinc-300">
+                  <span className="font-semibold text-indigo-300">
+                    Auditoria Multiescala Supersampling:
+                  </span>
+                  {vectorResult.stage2Report?.initialMetricsB &&
+                    vectorResult.stage2Report?.finalMetricsC && (
+                      <span className="font-mono text-zinc-300">
+                        ΔE₀₀ {vectorResult.stage2Report.initialMetricsB.meanDeltaE2000} →{' '}
+                        <strong className="text-emerald-300">
+                          {vectorResult.stage2Report.finalMetricsC.meanDeltaE2000}
+                        </strong>
+                        {' · '}
+                        Reparos automáticos:{' '}
+                        <strong className="text-indigo-200">
+                          {vectorResult.stage2Report.appliedRepairs?.length ?? 0}
+                        </strong>
+                        {' · '}
+                        Regiões auditadas:{' '}
+                        <strong>{vectorResult.stage2Report.inspectedRegionCount}</strong>
+                      </span>
+                    )}
+                  {vectorResult.qualityReport.hausdorffP99Px !== undefined && (
+                    <span className="font-mono text-zinc-400">
+                      Hausdorff P99: {vectorResult.qualityReport.hausdorffP99Px}px
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {comparisonMode !== 'pixel_diff' && (
+                    <button
+                      type="button"
+                      onClick={() => onChangeComparisonMode('pixel_diff')}
+                      className="rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[10px] font-medium text-zinc-200 hover:border-indigo-500/60 hover:text-indigo-200 cursor-pointer"
+                    >
+                      Ver mapa de diferenças
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    data-testid="toggle-stage2-report"
+                    onClick={() => setShowStage2Details((prev) => !prev)}
+                    className="rounded border border-indigo-500/35 bg-indigo-950/40 px-2 py-0.5 text-[10px] font-medium text-indigo-200 hover:bg-indigo-900/40 cursor-pointer"
+                  >
+                    {showStage2Details ? 'Ocultar guia de métricas' : 'Explicar métricas e regiões'}
+                  </button>
+                </div>
+              </div>
+
+              {showStage2Details && (
+                <div
+                  data-testid="stage2-detailed-panel"
+                  className="border-t border-zinc-800/90 pt-2.5 space-y-2 text-[11px] text-zinc-300"
+                >
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                    <div className="rounded border border-zinc-800 bg-zinc-900/60 p-2">
+                      <strong className="text-zinc-100 block">
+                        SSIM ({vectorResult.qualityReport.ssimPct}%) &amp; PSNR ({vectorResult.qualityReport.psnrDb} dB)
+                      </strong>
+                      <span className="text-zinc-400">
+                        Medem semelhança estrutural local em blocos 8×8 e relação sinal-ruído real entre a imagem original e o SVG renderizado em supersampling 2×.
+                      </span>
+                    </div>
+                    <div className="rounded border border-zinc-800 bg-zinc-900/60 p-2">
+                      <strong className="text-zinc-100 block">
+                        CIEDE2000 Médio ({vectorResult.qualityReport.meanDeltaE2000 ?? vectorResult.qualityReport.meanDeltaELab}) · P95 ({vectorResult.qualityReport.p95DeltaE2000 ?? '-'})
+                      </strong>
+                      <span className="text-zinc-400">
+                        Diferença perceptual humana ISO/CIE de cor e subtons. Valores abaixo de 1.0 são indistinguíveis a olho nu; P95 expõe desvios localizados.
+                      </span>
+                    </div>
+                    <div className="rounded border border-zinc-800 bg-zinc-900/60 p-2">
+                      <strong className="text-zinc-100 block">
+                        Chamfer ({vectorResult.qualityReport.chamferDistancePx ?? 0}px) · Hausdorff Máx ({vectorResult.qualityReport.hausdorffDistancePx ?? 0}px) · IoU ({vectorResult.qualityReport.iouPct ?? 100}%)
+                      </strong>
+                      <span className="text-zinc-400">
+                        Desvio geométrico médio e máximo dos contornos vetoriais em pixels e índice exato de interseção sobre união (IoU) das máscaras.
+                      </span>
+                    </div>
+                  </div>
+
+                  {vectorResult.stage2Report?.appliedRepairs &&
+                    vectorResult.stage2Report.appliedRepairs.length > 0 && (
+                      <div className="rounded border border-indigo-500/25 bg-indigo-950/20 p-2">
+                        <strong className="text-indigo-200 block mb-1">
+                          Correções Automáticas Aplicadas na Etapa 2 ({vectorResult.stage2Report.appliedRepairs.length}):
+                        </strong>
+                        <ul className="space-y-0.5 text-zinc-300 list-disc list-inside">
+                          {vectorResult.stage2Report.appliedRepairs.slice(0, 6).map((rep, idx) => (
+                            <li key={idx}>
+                              <code className="text-indigo-300">{rep.svgElementId ?? `reg-${rep.affectedRegionId}`}</code>:{' '}
+                              {rep.technicalJustification}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                  {vectorResult.stage2Report?.defects &&
+                    vectorResult.stage2Report.defects.length > 0 && (
+                      <div className="rounded border border-amber-500/25 bg-amber-950/20 p-2">
+                        <strong className="text-amber-200 block mb-1">
+                          Regiões com Atenção Localizada ({vectorResult.stage2Report.defects.length}):
+                        </strong>
+                        <ul className="space-y-0.5 text-amber-100/90 list-disc list-inside">
+                          {vectorResult.stage2Report.defects.slice(0, 5).map((def) => (
+                            <li key={def.defectId}>
+                              [{def.boundingBox.minX},{def.boundingBox.minY}] {def.description} ({def.probableCause})
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                </div>
+              )}
+            </div>
+          )}
 
           {vectorResult.technicalLimitationsNote && (
             <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-950/25 px-3 py-2 text-xs text-amber-200">

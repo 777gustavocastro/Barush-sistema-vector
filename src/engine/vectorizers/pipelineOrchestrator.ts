@@ -23,7 +23,11 @@ import {
 } from '../optimization/svgoOptimizer';
 import { validateSvgStructure } from '../validation/fileValidator';
 import { reconstructNativeSvgGradients } from '../gradients/svgGradientReconstructor';
-import { reconstructHighPrecisionTypographySvg } from '../typography/typographyProcessor';
+import {
+  buildExactTypographyInkMask,
+  reconstructHighPrecisionTypographySvg,
+} from '../typography/typographyProcessor';
+import { inpaintTypographyInkMask } from '../opencv/opencvSegmenter';
 import {
   organizeVTracerPathsIntoObjects,
   reconstructImageAsEditableObjects,
@@ -183,14 +187,19 @@ export async function runVectorizationOnRgbaInternal(
         []
       );
       primarySceneGraph = objRec.sceneGraph;
+      stage2Report = objRec.stage2Report;
       let objSceneSvg = objRec.svg;
 
       const stage2Hooks = getRegisteredStage2Hooks();
       for (const hook of stage2Hooks) {
-        const report = await hook.inspectScene(primarySceneGraph, denoisedImage, null);
-        stage2Report = report;
-        if (!report.passed && hook.autoRepairScene) {
-          const repaired = await hook.autoRepairScene(primarySceneGraph, report, denoisedImage);
+        const hookReport = await hook.inspectScene(primarySceneGraph, denoisedImage, null);
+        stage2Report = {
+          ...stage2Report,
+          passed: stage2Report.passed && hookReport.passed,
+          defects: [...stage2Report.defects, ...hookReport.defects],
+        };
+        if (!hookReport.passed && hook.autoRepairScene) {
+          const repaired = await hook.autoRepairScene(primarySceneGraph, hookReport, denoisedImage);
           if (repaired) {
             primarySceneGraph = repaired;
             objSceneSvg = repaired.svgMarkup;
@@ -244,9 +253,10 @@ export async function runVectorizationOnRgbaInternal(
     const totalWorkPixels = denoisedImage.width * denoisedImage.height;
     if (totalWorkPixels <= 1_800_000) {
       onProgress?.({
-        stageId: 'reconstruct_bezier',
-        stageLabel: 'Etapa C: Reconstruindo topologia planar, curvas Bézier e gradientes SVG nativos...',
-        percent: 50,
+        stageId: 'stage2_refinement',
+        stageLabel:
+          'Etapa C & D: Topologia planar OKLab + Ciclo iterativo de refinamento e correção automática...',
+        percent: 52,
       });
 
       const scaleOrigToWork = denoisedImage.width / originalWidth;
@@ -271,15 +281,20 @@ export async function runVectorizationOnRgbaInternal(
         scaledTypoBoxes
       );
       primarySceneGraph = objRec.sceneGraph;
+      stage2Report = objRec.stage2Report;
       objSceneSvg = objRec.svg;
 
-      // Executa hooks modulares da Etapa 2 caso registrados (preparado para inspeção/auto-reparo iterativo)
+      // Executa hooks externos adicionais caso registrados sem perder o histórico A->B->C da Etapa 2
       const stage2Hooks = getRegisteredStage2Hooks();
       for (const hook of stage2Hooks) {
-        const report = await hook.inspectScene(primarySceneGraph, denoisedImage, null);
-        stage2Report = report;
-        if (!report.passed && hook.autoRepairScene) {
-          const repaired = await hook.autoRepairScene(primarySceneGraph, report, denoisedImage);
+        const hookReport = await hook.inspectScene(primarySceneGraph, denoisedImage, null);
+        stage2Report = {
+          ...stage2Report,
+          passed: stage2Report.passed && hookReport.passed,
+          defects: [...stage2Report.defects, ...hookReport.defects],
+        };
+        if (!hookReport.passed && hook.autoRepairScene) {
+          const repaired = await hook.autoRepairScene(primarySceneGraph, hookReport, denoisedImage);
           if (repaired) {
             primarySceneGraph = repaired;
             objSceneSvg = repaired.svgMarkup;
@@ -318,18 +333,36 @@ export async function runVectorizationOnRgbaInternal(
       params.subpixelUpscale !== false
     );
 
+    // Remove tinta tipográfica antes de alimentar VTracer para evitar contornos duplicados sob as letras vetoriais!
+    const vtracerSubstrate =
+      params.enhanceTypography !== false &&
+      colorAnalysis.typographyRegions.length > 0 &&
+      resolvedParams.detailPrecision >= 65
+        ? inpaintTypographyInkMask(
+            denoisedImage,
+            buildExactTypographyInkMask(
+              denoisedImage,
+              colorAnalysis.typographyRegions,
+              denoisedImage.width / originalWidth
+            )
+          )
+        : denoisedImage;
+
     const traceInputImage =
       upscaleFactor === 2 || upscaleFactor === 3
-        ? upscaleRgbaCatmullRom(denoisedImage, upscaleFactor)
-        : denoisedImage;
+        ? upscaleRgbaCatmullRom(vtracerSubstrate, upscaleFactor)
+        : vtracerSubstrate;
 
     const viewBoxWidth = traceInputImage.width;
     const viewBoxHeight = traceInputImage.height;
     const coordScaleFromBase = viewBoxWidth / baseWorkingImage.width;
 
+    // Só sobrepõe gradientes auxiliares em VTracer quando a imagem excedeu o orçamento do motor topológico (> 1.8MP),
+    // evitando contornos sobrepostos duplicados sobre formas já vetorizadas!
     let gradDefsXml = '';
     let gradLayersXml = '';
     if (
+      totalWorkPixels > 1_800_000 &&
       params.reconstructGradients !== false &&
       resolvedParams.colorCount >= 16 &&
       (colorAnalysis.detectedCategory === 'gradient_logo' ||
@@ -337,7 +370,7 @@ export async function runVectorizationOnRgbaInternal(
         colorAnalysis.gradientRatio >= 0.18)
     ) {
       const gradRes = await reconstructNativeSvgGradients(
-        denoisedImage,
+        vtracerSubstrate,
         coordScaleFromBase
       );
       gradDefsXml = gradRes.defsXml;
@@ -470,10 +503,16 @@ export async function runVectorizationOnRgbaInternal(
     throw new Error(`Falha na validação vetorial estrita: ${validation.errors.join(' ')}`);
   }
 
+  const residualNoiseHigh =
+    colorAnalysis.noiseLevel >= 9.5 ||
+    (winnerQuality?.p95DeltaE2000 !== undefined && winnerQuality.p95DeltaE2000 >= 7.5);
+
   const technicalLimitationsNote =
     colorAnalysis.detectedCategory === 'photograph'
-      ? 'Fotografia contínua reconstruída por aproximação vetorial em camadas editáveis (sem incorporar pixels raster). Microtexturas fotográficas de sensor são representadas por regiões geométricas e gradientes aproximados.'
-      : undefined;
+      ? 'Fotografia contínua reconstruída por aproximação vetorial em camadas editáveis (zero pixels raster). Microtexturas estocásticas de sensor/JPEG são representadas por regiões geométricas e gradientes aproximados em vez de fragmentos artificiais.'
+      : residualNoiseHigh
+        ? 'A imagem contém microvariações estocásticas ou compressão com perdas que não possuem equivalente analítico exato em curvas Bézier; o motor priorizou geometria limpa sem criar fragmentos artificiais de ruído.'
+        : undefined;
 
   onProgress?.({
     stageId: 'validate',

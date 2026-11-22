@@ -101,6 +101,7 @@ export interface VectorizationProgressEvent {
     | 'segment_objects'
     | 'reconstruct_bezier'
     | 'gradients_typography'
+    | 'stage2_refinement'
     | 'evaluate_candidates'
     | 'validate';
   stageLabel: string;
@@ -159,10 +160,22 @@ export interface QualityComparisonReport {
   psnrDb: number;
   /** Fidelidade estrutural de contornos (Sobel F1) em 0..100%. */
   contourFidelityPct: number;
-  /** Fidelidade cromática perceptual baseada em CIE ΔE Lab (0..100%). */
+  /** Fidelidade cromática perceptual baseada em CIE ΔE Lab / CIEDE2000 (0..100%). */
   colorFidelityPct: number;
   /** Diferença perceptual média de cor CIE ΔE76 no espaço Lab. */
   meanDeltaELab: number;
+  /** Diferença perceptual média internacional ISO/CIE CIEDE2000 (ΔE₀₀). */
+  meanDeltaE2000?: number;
+  /** Percentil 95 de diferença cromática CIEDE2000 (revela desvios localizados). */
+  p95DeltaE2000?: number;
+  /** Distância média bidirecional de contornos (Chamfer Distance) em pixels. */
+  chamferDistancePx?: number;
+  /** Distância máxima de desvio geométrico de contorno (Hausdorff Distance) em pixels. */
+  hausdorffDistancePx?: number;
+  /** Percentil 99 da distância de Hausdorff em pixels. */
+  hausdorffP99Px?: number;
+  /** Intersection over Union (IoU) da máscara de silhueta em 0..100%. */
+  iouPct?: number;
   /** Continuidade e fidelidade de transições/gradientes (0..100%). */
   gradientContinuityPct: number;
   /** Erro absoluto médio por canal (0..255). */

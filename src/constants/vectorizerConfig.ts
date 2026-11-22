@@ -127,7 +127,8 @@ export const PIPELINE_STAGES_ORDER = [
   { id: 'analyze' as const, label: 'Etapa A: Análise OpenCV de regiões, bordas e cores' },
   { id: 'segment_objects' as const, label: 'Etapa B: Separação em objetos independentes (<g>)' },
   { id: 'reconstruct_bezier' as const, label: 'Etapa C: Reconstrução geométrica em curvas Bézier' },
+  { id: 'stage2_refinement' as const, label: 'Etapa D: Refinamento iterativo e auto-reparo (CIEDE2000, Chamfer, IoU)' },
   { id: 'gradients_typography' as const, label: 'Gradientes SVG nativos e tipografia em caminhos' },
-  { id: 'evaluate_candidates' as const, label: 'Seleção multi-candidato (SSIM, CIE ΔE e contornos)' },
+  { id: 'evaluate_candidates' as const, label: 'Seleção multi-candidato supersampling (SSIM, ΔE2000 e Hausdorff)' },
   { id: 'validate' as const, label: 'Auditoria XML anti-raster e validação editável' },
 ];

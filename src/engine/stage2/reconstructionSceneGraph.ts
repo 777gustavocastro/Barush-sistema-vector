@@ -60,6 +60,8 @@ export interface VectorReconstructionSceneGraph {
 }
 
 export type Stage2DefectCategory =
+  | 'ghost_or_halo_artifact'
+  | 'chromatic_shift'
   | 'color_bleeding'
   | 'boundary_gap'
   | 'missing_hole'
@@ -75,18 +77,82 @@ export interface Stage2DetectedDefect {
   affectedObjectId?: number;
   affectedRegionId?: number;
   boundingBox: BoundingBox2D;
-  measuredDeltaEOklab: number;
+  pixelArea: number;
+  measuredDeltaE2000: number;
+  measuredGeometricDeviationPx?: number;
+  probableCause: string;
   description: string;
+}
+
+export interface Stage2RegionDiagnostic {
+  regionId: number;
+  parentObjectId: number;
+  svgPathId: string;
+  nature: RegionVisualNature;
+  pixelCount: number;
+  boundingBox: BoundingBox2D;
+  meanDeltaE2000: number;
+  p95DeltaE2000: number;
+  deltaLightness: number;
+  deltaChroma: number;
+  deltaAlpha: number;
+  contourChamferPx: number;
+  contourHausdorffPx: number;
+  chromaticDiagnosis:
+    | 'accurate'
+    | 'lighter'
+    | 'darker'
+    | 'desaturated'
+    | 'oversaturated'
+    | 'hue_shifted'
+    | 'opacity_shifted';
+}
+
+export interface Stage2MetricsSnapshot {
+  versionLabel: string;
+  ssimPct: number;
+  psnrDb: number;
+  meanDeltaE2000: number;
+  p95DeltaE2000: number;
+  colorFidelityCiede2000Pct: number;
+  chamferDistancePx: number;
+  hausdorffDistancePx: number;
+  hausdorffP99Px: number;
+  iouPct: number;
+  contourF1Pct: number;
+  gradientContinuityPct: number;
+  artifactRegionCount: number;
+  lostDetailRegionCount: number;
+  worstRegionDeltaE2000: number;
+  pathCount: number;
+  gradientCount: number;
+}
+
+export interface Stage2AppliedRepairRecord {
+  iteration: number;
+  targetType: 'region_color' | 'region_gradient' | 'region_curve' | 'rescued_detail' | 'halo_suppression';
+  affectedRegionId?: number;
+  svgElementId?: string;
+  defectCategory: Stage2DefectCategory;
+  technicalJustification: string;
+  beforeDeltaE2000: number;
+  afterDeltaE2000: number;
 }
 
 export interface Stage2InspectionReport {
   passed: boolean;
   defects: Stage2DetectedDefect[];
   inspectedRegionCount: number;
+  regionDiagnostics?: Stage2RegionDiagnostic[];
+  initialMetricsB?: Stage2MetricsSnapshot;
+  finalMetricsC?: Stage2MetricsSnapshot;
+  iterationHistory?: Stage2MetricsSnapshot[];
+  appliedRepairs?: Stage2AppliedRepairRecord[];
+  iterationsExecuted?: number;
 }
 
 /**
- * Contrato modular extensível preparado para a Etapa 2 (Detecção Automática de Defeitos,
+ * Contrato modular extensível para a Etapa 2 (Detecção Automática de Defeitos,
  * Auto-Correção Localizada de Regiões e Validação Perceptual Iterativa).
  */
 export interface Stage2VerificationHook {

@@ -3,19 +3,15 @@ import type {
   QualityComparisonReport,
   RawRgbaImage,
 } from '../types';
+import { deltaECiede2000FromLab } from '../color/perceptualColor';
+import { computeExactEuclideanDistanceTransform } from '../stage2/stage2Diagnostics';
+import { renderSvgSupersampled } from '../stage2/supersampledSvgRenderer';
 import { validateSvgStructure } from '../validation/fileValidator';
 
-function isNodeRuntime(): boolean {
-  return (
-    typeof globalThis !== 'undefined' &&
-    Boolean((globalThis as { process?: { versions?: { node?: string } } }).process?.versions?.node) &&
-    typeof window === 'undefined'
-  );
-}
-
 /**
- * Rasteriza o SVG gerado exatamente nas dimensões (width x height) da imagem original
- * em memória temporária APENAS para avaliação comparativa de qualidade (jamais incorporado ao SVG!).
+ * Rasteriza o SVG gerado com Supersampling (`2×`) e integração de área pré-multiplicada
+ * exatamente nas dimensões (width x height) da imagem original APENAS para avaliação comparativa
+ * (funciona em Node, Main Thread e Web Worker via OffscreenCanvas — jamais incorporado ao SVG!).
  */
 export async function rasterizeSvgAtExactSize(
   svgMarkup: string,
@@ -23,70 +19,9 @@ export async function rasterizeSvgAtExactSize(
   targetHeight: number,
   opaqueBackgroundRgb?: [number, number, number]
 ): Promise<RawRgbaImage | null> {
-  if (isNodeRuntime()) {
-    try {
-      const resvgPkg = '@resvg/resvg-js';
-      const { Resvg } = await import(/* @vite-ignore */ resvgPkg);
-      const bgStr = opaqueBackgroundRgb
-        ? `rgb(${opaqueBackgroundRgb[0]}, ${opaqueBackgroundRgb[1]}, ${opaqueBackgroundRgb[2]})`
-        : undefined;
-      const resvg = new Resvg(svgMarkup, {
-        fitTo: { mode: 'width', value: targetWidth },
-        ...(bgStr ? { background: bgStr } : {}),
-      });
-      const rendered = resvg.render();
-      return {
-        width: rendered.width,
-        height: rendered.height,
-        data: new Uint8Array(
-          rendered.pixels.buffer,
-          rendered.pixels.byteOffset,
-          rendered.pixels.byteLength
-        ),
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  if (typeof window !== 'undefined' && typeof document !== 'undefined') {
-    const svgBlob = new Blob([svgMarkup], { type: 'image/svg+xml;charset=utf-8' });
-    const url = URL.createObjectURL(svgBlob);
-    try {
-      return await new Promise<RawRgbaImage>((resolve, reject) => {
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          canvas.width = targetWidth;
-          canvas.height = targetHeight;
-          const ctx = canvas.getContext('2d');
-          if (!ctx) {
-            reject(new Error('Contexto 2D indisponível'));
-            return;
-          }
-          if (opaqueBackgroundRgb) {
-            ctx.fillStyle = `rgb(${opaqueBackgroundRgb[0]}, ${opaqueBackgroundRgb[1]}, ${opaqueBackgroundRgb[2]})`;
-            ctx.fillRect(0, 0, targetWidth, targetHeight);
-          }
-          ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
-          const imgData = ctx.getImageData(0, 0, targetWidth, targetHeight);
-          resolve({
-            width: targetWidth,
-            height: targetHeight,
-            data: new Uint8Array(imgData.data.buffer),
-          });
-        };
-        img.onerror = () => reject(new Error('Falha ao renderizar SVG para comparação'));
-        img.src = url;
-      });
-    } catch {
-      return null;
-    } finally {
-      URL.revokeObjectURL(url);
-    }
-  }
-
-  return null;
+  return renderSvgSupersampled(svgMarkup, targetWidth, targetHeight, {
+    opaqueBackgroundRgb,
+  });
 }
 
 function srgbToLab(r8: number, g8: number, b8: number): [number, number, number] {
@@ -132,10 +67,41 @@ export function computeQualityComparisonFromBuffers(
   const origLum = new Float32Array(width * height);
   const vecLum = new Float32Array(width * height);
 
-  // Amostragem perceptual CIE Lab (passo adaptativo para manter tempo < 8 ms)
+  // Amostragem perceptual CIE Lab + CIEDE2000 (passo adaptativo rápido)
   const labStep = Math.max(1, Math.floor(Math.sqrt(totalPixels / 16000)));
   let deltaESum = 0;
+  let deltaE2000Sum = 0;
   let deltaECount = 0;
+  const de2000Hist = new Int32Array(1001);
+
+  const tlA = original.data[3];
+  const bgR0 = original.data[0];
+  const bgG0 = original.data[1];
+  const bgB0 = original.data[2];
+  const cornerOffsets = [
+    0,
+    (width - 1) * 4,
+    (height - 1) * original.width * 4,
+    ((height - 1) * original.width + (width - 1)) * 4,
+  ];
+  let matchingOpaqueCorners = 0;
+  let transparentCorners = 0;
+  for (const cOff of cornerOffsets) {
+    if (original.data[cOff + 3] < 30) {
+      transparentCorners++;
+    } else if (
+      Math.abs(original.data[cOff] - bgR0) +
+        Math.abs(original.data[cOff + 1] - bgG0) +
+        Math.abs(original.data[cOff + 2] - bgB0) <=
+      28
+    ) {
+      matchingOpaqueCorners++;
+    }
+  }
+  const hasTransparentCanvas = transparentCorners >= 2 || tlA < 30;
+  const hasUniformOpaqueBg = !hasTransparentCanvas && matchingOpaqueCorners >= 3;
+  let fgInter = 0;
+  let fgUni = 0;
 
   for (let y = 0; y < height; y++) {
     const sampleLabRow = y % labStep === 0;
@@ -167,11 +133,34 @@ export function computeQualityComparisonFromBuffers(
       origLum[pIdx] = 0.299 * or + 0.587 * og + 0.114 * ob;
       vecLum[pIdx] = 0.299 * vr + 0.587 * vg + 0.114 * vb;
 
+      let oCov: number;
+      let vCov: number;
+      if (hasTransparentCanvas) {
+        oCov = original.data[oIdx + 3] < 10 ? 0 : original.data[oIdx + 3] / 255;
+        vCov = renderedSvg.data[vIdx + 3] < 10 ? 0 : renderedSvg.data[vIdx + 3] / 255;
+      } else if (hasUniformOpaqueBg) {
+        const oL1 =
+          Math.abs(original.data[oIdx] - bgR0) +
+          Math.abs(original.data[oIdx + 1] - bgG0) +
+          Math.abs(original.data[oIdx + 2] - bgB0);
+        const vL1 = Math.abs(vr - bgR0) + Math.abs(vg - bgG0) + Math.abs(vb - bgB0);
+        oCov = oL1 <= 16 ? 0 : Math.min(1, (oL1 - 16) / 140);
+        vCov = vL1 <= 16 ? 0 : Math.min(1, (vL1 - 16) / 140);
+      } else {
+        oCov = original.data[oIdx + 3] / 255;
+        vCov = renderedSvg.data[vIdx + 3] / 255;
+      }
+      fgInter += Math.min(oCov, vCov);
+      fgUni += Math.max(oCov, vCov);
+
       if (sampleLabRow && x % labStep === 0) {
         const [ol, oaLab, obLab] = srgbToLab(or, og, ob);
         const [vl, vaLab, vbLab] = srgbToLab(vr, vg, vb);
         const de = Math.hypot(ol - vl, oaLab - vaLab, obLab - vbLab);
+        const de00 = deltaECiede2000FromLab(ol, oaLab, obLab, vl, vaLab, vbLab);
         deltaESum += de;
+        deltaE2000Sum += de00;
+        de2000Hist[Math.min(1000, Math.round(de00 * 10))]++;
         deltaECount++;
       }
     }
@@ -184,6 +173,20 @@ export function computeQualityComparisonFromBuffers(
   const pixelSimilarityPct = Number(Math.max(0, Math.min(100, (1 - mae / 255) * 100)).toFixed(2));
 
   const meanDeltaELab = deltaECount > 0 ? Number((deltaESum / deltaECount).toFixed(2)) : 0;
+  const meanDeltaE2000 = deltaECount > 0 ? Number((deltaE2000Sum / deltaECount).toFixed(2)) : 0;
+  let p95DeltaE2000 = 0;
+  if (deltaECount > 0) {
+    let acc = 0;
+    const target95 = Math.floor(deltaECount * 0.95);
+    for (let b = 0; b <= 1000; b++) {
+      acc += de2000Hist[b];
+      if (acc >= target95) {
+        p95DeltaE2000 = Number((b / 10).toFixed(2));
+        break;
+      }
+    }
+  }
+  const iouPct = fgUni > 0 ? Number(((fgInter / fgUni) * 100).toFixed(2)) : 100;
   const colorFidelityPct = Number(
     Math.max(0, Math.min(100, (1 - meanDeltaELab / 48) * 100)).toFixed(2)
   );
@@ -239,7 +242,9 @@ export function computeQualityComparisonFromBuffers(
 
   // 2. Comparação de contornos (Sobel F1 com tolerância de 1px) + Continuidade de Gradientes
   const origEdges = new Uint8Array(width * height);
+  const origEdgesSupport = new Uint8Array(width * height);
   const vecEdges = new Uint8Array(width * height);
+  const vecEdgesSupport = new Uint8Array(width * height);
   const edgeThresh = 26;
   let origEdgeCount = 0;
   let vecEdgeCount = 0;
@@ -253,16 +258,42 @@ export function computeQualityComparisonFromBuffers(
       const idx = row + x;
       const ogx = origLum[idx + 1] - origLum[idx - 1];
       const ogy = origLum[idx + width] - origLum[idx - width];
-      const oMag = Math.abs(ogx) + Math.abs(ogy);
+      const oL4 = (idx - 1) * 4;
+      const oR4 = (idx + 1) * 4;
+      const oU4 = (idx - width) * 4;
+      const oD4 = (idx + width) * 4;
+      const oChroma =
+        0.5 *
+        Math.max(
+          Math.abs(original.data[oR4] - original.data[oL4]) +
+            Math.abs(original.data[oD4] - original.data[oU4]),
+          Math.abs(original.data[oR4 + 1] - original.data[oL4 + 1]) +
+            Math.abs(original.data[oD4 + 1] - original.data[oU4 + 1]),
+          Math.abs(original.data[oR4 + 2] - original.data[oL4 + 2]) +
+            Math.abs(original.data[oD4 + 2] - original.data[oU4 + 2])
+        );
+      const oMag = Math.max(Math.abs(ogx) + Math.abs(ogy), oChroma);
 
       const vgx = vecLum[idx + 1] - vecLum[idx - 1];
       const vgy = vecLum[idx + width] - vecLum[idx - width];
-      const vMag = Math.abs(vgx) + Math.abs(vgy);
+      const vChroma =
+        0.5 *
+        Math.max(
+          Math.abs(renderedSvg.data[oR4] - renderedSvg.data[oL4]) +
+            Math.abs(renderedSvg.data[oD4] - renderedSvg.data[oU4]),
+          Math.abs(renderedSvg.data[oR4 + 1] - renderedSvg.data[oL4 + 1]) +
+            Math.abs(renderedSvg.data[oD4 + 1] - renderedSvg.data[oU4 + 1]),
+          Math.abs(renderedSvg.data[oR4 + 2] - renderedSvg.data[oL4 + 2]) +
+            Math.abs(renderedSvg.data[oD4 + 2] - renderedSvg.data[oU4 + 2])
+        );
+      const vMag = Math.max(Math.abs(vgx) + Math.abs(vgy), vChroma);
 
+      if (oMag >= 13) origEdgesSupport[idx] = 1;
       if (oMag >= edgeThresh) {
         origEdges[idx] = 1;
         origEdgeCount++;
       }
+      if (vMag >= 13) vecEdgesSupport[idx] = 1;
       if (vMag >= edgeThresh) {
         vecEdges[idx] = 1;
         vecEdgeCount++;
@@ -334,6 +365,45 @@ export function computeQualityComparisonFromBuffers(
       ? Number(((smoothGradConsistent / smoothGradPixels) * 100).toFixed(2))
       : 100;
 
+  // Distância de Chamfer e Distância de Hausdorff exatas via EDT 2D O(W·H) com histerese
+  const dtOrig = computeExactEuclideanDistanceTransform(origEdgesSupport, width, height);
+  const dtVec = computeExactEuclideanDistanceTransform(vecEdgesSupport, width, height);
+  let sumO2V = 0;
+  let sumV2O = 0;
+  let maxHausdorff = 0;
+  const hBins = new Int32Array(501);
+  for (let i = 0; i < width * height; i++) {
+    if (origEdges[i]) {
+      const d = dtVec[i];
+      sumO2V += d;
+      if (d > maxHausdorff) maxHausdorff = d;
+      hBins[Math.min(500, Math.round(d * 10))]++;
+    }
+    if (vecEdges[i]) {
+      const d = dtOrig[i];
+      sumV2O += d;
+      if (d > maxHausdorff) maxHausdorff = d;
+      hBins[Math.min(500, Math.round(d * 10))]++;
+    }
+  }
+  const chamferDistancePx =
+    origEdgeCount > 0 && vecEdgeCount > 0
+      ? Number((0.5 * (sumO2V / origEdgeCount + sumV2O / vecEdgeCount)).toFixed(3))
+      : 0;
+  let hausdorffP99Px = 0;
+  const totEdgePts = origEdgeCount + vecEdgeCount;
+  if (totEdgePts > 0) {
+    let accH = 0;
+    const t99 = Math.floor(totEdgePts * 0.99);
+    for (let b = 0; b <= 500; b++) {
+      accH += hBins[b];
+      if (accH >= t99) {
+        hausdorffP99Px = Number((b / 10).toFixed(2));
+        break;
+      }
+    }
+  }
+
   return {
     ssimPct,
     pixelSimilarityPct,
@@ -341,6 +411,12 @@ export function computeQualityComparisonFromBuffers(
     contourFidelityPct,
     colorFidelityPct,
     meanDeltaELab,
+    meanDeltaE2000,
+    p95DeltaE2000,
+    chamferDistancePx,
+    hausdorffDistancePx: Number(maxHausdorff.toFixed(2)),
+    hausdorffP99Px,
+    iouPct,
     gradientContinuityPct,
     meanAbsoluteError: Number(mae.toFixed(2)),
   };
@@ -435,6 +511,15 @@ export async function evaluateAndSelectBestCandidate(
         ? Math.min(8.5, (struct.pathCount - fragmentationThreshold) / 95)
         : 0) + relativeFragmentationPenalty;
 
+    // Penaliza perda localizada de detalhes (ex.: estrela/olho apagado que eleva Hausdorff mesmo com média global alta!)
+    const localizedDefectPenalty =
+      ((q.hausdorffDistancePx ?? 0) > 4.5
+        ? Math.min(10.0, ((q.hausdorffDistancePx ?? 0) - 4.5) * 0.32)
+        : 0) +
+      ((q.chamferDistancePx ?? 0) > 0.35
+        ? Math.min(6.0, ((q.chamferDistancePx ?? 0) - 0.35) * 2.4)
+        : 0);
+
     const compositeScore = Number(
       (
         q.ssimPct * 0.34 +
@@ -443,7 +528,8 @@ export async function evaluateAndSelectBestCandidate(
         q.gradientContinuityPct * 0.16 +
         nativeGradBonus +
         topologyCleanBonus -
-        excessiveFragmentationPenalty
+        excessiveFragmentationPenalty -
+        localizedDefectPenalty
       ).toFixed(2)
     );
 

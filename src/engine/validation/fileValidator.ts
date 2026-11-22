@@ -7,6 +7,11 @@ export interface RasterValidationResult {
   error?: string;
 }
 
+export interface SvgValidationOptions {
+  /** Quando verdadeiro (exclusivo para Modo 1 — Fidelidade Visual Máxima), permite camada raster embutida devidamente identificada. */
+  allowHybridRaster?: boolean;
+}
+
 const MAX_FILE_BYTES = 25 * 1024 * 1024; // 25 MB limite seguro local
 
 /**
@@ -34,7 +39,6 @@ export function validateRasterBytes(
     };
   }
 
-  // PNG: 89 50 4E 47 0D 0A 1A 0A
   const isPng =
     bytes[0] === 0x89 &&
     bytes[1] === 0x50 &&
@@ -49,7 +53,6 @@ export function validateRasterBytes(
     return { valid: true, detectedFormat: 'png', byteLength: bytes.byteLength };
   }
 
-  // JPEG: FF D8 FF
   const isJpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
   if (isJpeg) {
     const ext = fileNameHint?.split('.').pop()?.toLowerCase();
@@ -60,7 +63,6 @@ export function validateRasterBytes(
     };
   }
 
-  // WebP: "RIFF" .... "WEBP"
   const isWebp =
     bytes[0] === 0x52 &&
     bytes[1] === 0x49 &&
@@ -90,9 +92,14 @@ function parseNumericAttr(raw: string | undefined): number | null {
 }
 
 /**
- * Valida se o conteúdo gerado é um documento SVG verdadeiramente vetorial e íntegro.
+ * Valida se o conteúdo gerado é um documento SVG íntegro.
+ * - No Modo Vetor Editável (padrão, allowHybridRaster=false): rejeita estritamente qualquer imagem raster embutida (<image>).
+ * - No Modo Fidelidade Visual Máxima (allowHybridRaster=true): aceita SVG híbrido contendo contornos vetoriais + camada raster identificada.
  */
-export function validateSvgStructure(svgContent: string): SvgValidationReport {
+export function validateSvgStructure(
+  svgContent: string,
+  options: SvgValidationOptions = {}
+): SvgValidationReport {
   const errors: string[] = [];
   const warnings: string[] = [];
   const trimmed = svgContent.trim();
@@ -107,6 +114,7 @@ export function validateSvgStructure(svgContent: string): SvgValidationReport {
       height: null,
       viewBox: null,
       pathCount: 0,
+      gradientCount: 0,
       totalVectorElements: 0,
       hasEmbeddedRaster: false,
       byteLength: 0,
@@ -139,13 +147,16 @@ export function validateSvgStructure(svgContent: string): SvgValidationReport {
     warnings.push('O SVG não define viewBox nem par explícito de width/height.');
   }
 
-  // Conta elementos vetoriais reais e verifica se existem comandos de caminho válidos
   const pathMatches = [...trimmed.matchAll(/<path\b[^>]*\bd\s*=\s*["']([^"']*)["'][^>]*\/?>/gi)];
   const nonEmptyPaths = pathMatches.filter((m) => /[MLHVCSQTAZmlhvcsqtaz]/.test(m[1]));
   const pathCount = nonEmptyPaths.length;
 
+  const gradientCount = [
+    ...trimmed.matchAll(/<(linearGradient|radialGradient)\b[^>]*>/gi),
+  ].length;
+
   const otherPrimitives = [
-    ...trimmed.matchAll(/<(polygon|polyline|rect|circle|ellipse|line)\b[^>]*\/?>/gi),
+    ...trimmed.matchAll(/<(polygon|polyline|rect|circle|ellipse|line|text)\b[^>]*\/?>/gi),
   ].length;
   const totalVectorElements = pathCount + otherPrimitives;
 
@@ -153,9 +164,19 @@ export function validateSvgStructure(svgContent: string): SvgValidationReport {
     errors.push('Nenhum caminho (<path>) ou primitiva geométrica vetorial válida encontrada no SVG.');
   }
 
-  const hasEmbeddedRaster = /<image\b[^>]*>/i.test(trimmed) || /data:image\/(png|jpeg|webp|bmp)/i.test(trimmed);
+  const hasEmbeddedRaster =
+    /<image\b[^>]*>/i.test(trimmed) || /data:image\/(png|jpeg|webp|bmp)/i.test(trimmed);
+
   if (hasEmbeddedRaster) {
-    errors.push('O arquivo contém imagem raster embutida (<image>), não sendo puramente vetorial.');
+    if (options.allowHybridRaster) {
+      warnings.push(
+        'SVG Híbrido (Fidelidade Visual Máxima): contém a imagem original rasterizada incorporada junto à estrutura vetorial.'
+      );
+    } else {
+      errors.push(
+        'O arquivo contém imagem raster embutida (<image>), sendo inválido para o Modo Vetor Editável.'
+      );
+    }
   }
 
   return {
@@ -166,6 +187,7 @@ export function validateSvgStructure(svgContent: string): SvgValidationReport {
     height,
     viewBox,
     pathCount,
+    gradientCount,
     totalVectorElements,
     hasEmbeddedRaster,
     byteLength,

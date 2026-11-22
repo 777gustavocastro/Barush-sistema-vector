@@ -1,6 +1,9 @@
 import type { PotraceOptions } from 'esm-potrace-wasm';
 import type { RawRgbaImage, VectorizationParameters } from '../types';
-import { binarizeForMonochromeWithColor } from '../image-processing/filters';
+import {
+  binarizeForMonochromeWithColor,
+  upscaleRgbaCatmullRom,
+} from '../image-processing/filters';
 
 interface PotraceModule {
   init: () => Promise<void>;
@@ -20,10 +23,6 @@ function isNodeRuntime(): boolean {
   );
 }
 
-/**
- * Carrega e inicializa o binário WebAssembly do Potrace (esm-potrace-wasm),
- * garantindo compatibilidade tanto no Navegador quanto em Node.js ESM.
- */
 async function loadPotraceModule(): Promise<PotraceModule> {
   if (!potraceReadyPromise) {
     potraceReadyPromise = (async () => {
@@ -55,38 +54,37 @@ async function loadPotraceModule(): Promise<PotraceModule> {
 }
 
 export function buildPotraceOptions(params: VectorizationParameters): PotraceOptions {
-  // turdsize: suprime speckles/ruídos em pixels quadrados (preserva detalhes quando noiseRemoval é baixo)
+  // turdsize=1 preserva pequenos pontos, acentos, serifas e extremidades finas
   const turdsize =
-    params.noiseRemoval <= 10
+    params.noiseRemoval <= 15
       ? 1
-      : Math.max(1, Math.round(1 + (params.noiseRemoval / 100) * 16));
+      : Math.max(1, Math.round(1 + ((params.noiseRemoval - 15) / 85) * 14));
 
-  // alphamax: limiar de vértices (0 = polígono puro, 1.334 = sem cantos agudos)
-  const alphamax = Number((0.25 + (params.curveSmoothness / 100) * 1.05).toFixed(3));
+  // alphamax equilibrado para preservar tanto cantos reais quanto curvas suaves
+  const alphamax = Number((0.45 + (params.curveSmoothness / 100) * 0.72).toFixed(3));
 
-  // opttolerance: tolerância de simplificação de curvas Bézier (0.08 preciso .. 0.85 simplificado)
-  const opttolerance = Number((0.08 + (params.pathSimplification / 100) * 0.75).toFixed(3));
-
-  const useMultiLevelPosterize = params.colorCount > 2 && params.profile !== 'monochrome_logo';
+  // opttolerance baixo (0.04..0.45) para máxima precisão geométrica das curvas Bézier
+  const opttolerance =
+    params.pathSimplification <= 12
+      ? 0.045
+      : Number((0.05 + (params.pathSimplification / 100) * 0.45).toFixed(3));
 
   return {
     turdsize,
-    turnpolicy: 4, // POTRACE_TURNPOLICY_MINORITY (ótimo para logos e tipografia)
+    turnpolicy: 4, // POTRACE_TURNPOLICY_MINORITY (excelente para tipografia e pontas)
     alphamax,
-    opticurve: params.curveSmoothness >= 12 ? 1 : 0,
+    opticurve: params.curveSmoothness >= 8 ? 1 : 0,
     opttolerance,
     pathonly: false,
-    extractcolors: useMultiLevelPosterize,
-    posterizelevel: useMultiLevelPosterize
-      ? Math.min(8, Math.max(2, Math.round(params.colorCount / 2)))
-      : 2,
+    extractcolors: false, // Potrace é usado exclusivamente em modo monocromático puro de alta precisão
+    posterizelevel: 2,
     posterizationalgorithm: 0,
   };
 }
 
 /**
- * Executa vetorização via Potrace (ideal para imagens monocromáticas, logos e alto contraste),
- * preservando a cor real predominante da figura monocromática (inclusive branco sobre transparente).
+ * Executa vetorização via Potrace exclusivamente para imagens monocromáticas e desenhos P&B,
+ * utilizando super-amostragem bicúbica em imagens pequenas/médias para curvas sub-pixel perfeitas.
  */
 export async function vectorizeWithPotrace(
   image: RawRgbaImage,
@@ -95,14 +93,15 @@ export async function vectorizeWithPotrace(
   const potraceMod = await loadPotraceModule();
   const options = buildPotraceOptions(params);
 
-  let prepared = image;
-  let foregroundHex: string | null = null;
+  const longest = Math.max(image.width, image.height);
+  const workingImg =
+    params.subpixelUpscale !== false && longest <= 900
+      ? upscaleRgbaCatmullRom(image, 2)
+      : image;
 
-  if (options.extractcolors === false) {
-    const binarized = binarizeForMonochromeWithColor(image, params.contourSensitivity);
-    prepared = binarized.image;
-    foregroundHex = binarized.foregroundHex;
-  }
+  const binarized = binarizeForMonochromeWithColor(workingImg, params.contourSensitivity);
+  const prepared = binarized.image;
+  const foregroundHex = binarized.foregroundHex;
 
   const clamped = new Uint8ClampedArray(
     prepared.data.buffer,
@@ -124,4 +123,79 @@ export async function vectorizeWithPotrace(
   }
 
   return svg;
+}
+
+/**
+ * Traça uma máscara binária (0/1) com Potrace de alta precisão e retorna um grupo <g> posicionado
+ * com o preenchimento desejado (cor sólida ou referência url(#gradiente) nativa do SVG).
+ */
+export async function traceMaskWithPotraceToSvgElements(
+  binaryMask: Uint8Array,
+  width: number,
+  height: number,
+  fillValue: string,
+  offsetX: number,
+  offsetY: number,
+  scale: number,
+  groupId: string,
+  customOpts?: { alphamax?: number; opttolerance?: number; turdsize?: number }
+): Promise<string> {
+  if (width < 2 || height < 2) return '';
+
+  let hasActive = false;
+  for (let i = 0; i < binaryMask.length; i++) {
+    if (binaryMask[i]) {
+      hasActive = true;
+      break;
+    }
+  }
+  if (!hasActive) return '';
+
+  const potraceMod = await loadPotraceModule();
+  const rgba = new Uint8ClampedArray(width * height * 4);
+  for (let i = 0; i < binaryMask.length; i++) {
+    const val = binaryMask[i] ? 0 : 255;
+    const idx = i * 4;
+    rgba[idx] = val;
+    rgba[idx + 1] = val;
+    rgba[idx + 2] = val;
+    rgba[idx + 3] = 255;
+  }
+
+  const rawSvg = await potraceMod.potrace(
+    { data: rgba, width, height },
+    {
+      turdsize: customOpts?.turdsize ?? 1,
+      turnpolicy: 4,
+      alphamax: customOpts?.alphamax ?? 0.88,
+      opticurve: 1,
+      opttolerance: customOpts?.opttolerance ?? 0.05,
+      pathonly: false,
+      extractcolors: false,
+    }
+  );
+
+  const innerMatch = rawSvg.match(/<svg\b[^>]*>([\s\S]*?)<\/svg>/i);
+  if (!innerMatch) return '';
+
+  let inner = innerMatch[1].trim();
+  if (!/<path\b/i.test(inner)) return '';
+
+  inner = inner.replace(/fill="#000000"/gi, `fill="${fillValue}"`);
+  if (!/\bfill\s*=/i.test(inner)) {
+    inner = `<g fill="${fillValue}">${inner}</g>`;
+  }
+
+  const tx = Number(offsetX.toFixed(3));
+  const ty = Number(offsetY.toFixed(3));
+  const sc = Number(scale.toFixed(6));
+
+  const transformAttr =
+    tx === 0 && ty === 0 && sc === 1
+      ? ''
+      : sc === 1
+        ? ` transform="translate(${tx},${ty})"`
+        : ` transform="translate(${tx},${ty}) scale(${sc})"`;
+
+  return `<g id="${groupId}"${transformAttr}>${inner}</g>`;
 }

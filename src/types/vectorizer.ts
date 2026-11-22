@@ -29,6 +29,8 @@ export type ComparisonMode = 'side_by_side' | 'slider';
 
 export type CanvasBackground = 'transparent' | 'white' | 'dark';
 
+export type ResultOutputMode = 'editable_vector' | 'max_visual_fidelity';
+
 export interface SourceImageInfo {
   name: string;
   format: AcceptedFormat;

@@ -12,3 +12,7 @@ export * from './export/svgExporter';
 export * from './export/svgPreviewRenderer';
 export * from './temp/tempStorage';
 export * from './worker/vectorizerClient';
+export * from './gradients/svgGradientReconstructor';
+export * from './typography/typographyProcessor';
+export * from './quality/qualityEvaluator';
+export * from './hybrid/hybridSvgBuilder';

@@ -377,7 +377,19 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
                     {outputSvgFilename}
                   </span>
                   <span className="rounded bg-zinc-900/90 border border-zinc-700/80 px-1.5 py-0.5 font-mono text-[10px] text-zinc-200">
-                    {vectorResult.engineUsed === 'potrace' ? 'Potrace WASM' : 'VTracer WASM'}
+                    {vectorResult.isHybridRasterSvg
+                      ? 'SVG híbrido'
+                      : vectorResult.engineUsed === 'potrace'
+                        ? 'Potrace WASM'
+                        : 'VTracer WASM'}
+                  </span>
+                  <span className="rounded bg-zinc-900/90 border border-zinc-700/80 px-1.5 py-0.5 text-[10px] text-zinc-200">
+                    {vectorResult.outputMode === 'max_visual_fidelity'
+                      ? 'Fidelidade máxima'
+                      : 'Vetor editável'}
+                    {vectorResult.qualityReport
+                      ? ` · ${vectorResult.qualityReport.pixelSimilarityPct}%`
+                      : ''}
                   </span>
                 </div>
                 <p className="mt-0.5 text-xs text-emerald-200/80">

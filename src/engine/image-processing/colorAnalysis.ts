@@ -3,28 +3,51 @@ import type {
   DetectedImageCategory,
   RawRgbaImage,
   TunedSliderValues,
-  VectorEngineKind,
 } from '../types';
+import { detectTypographyRegions } from '../typography/typographyProcessor';
 
 function rgbToHex(r: number, g: number, b: number): string {
   return (
     '#' +
     [r, g, b]
-      .map((channel) => Math.max(0, Math.min(255, Math.round(channel))).toString(16).padStart(2, '0'))
+      .map((channel) =>
+        Math.max(0, Math.min(255, Math.round(channel)))
+          .toString(16)
+          .padStart(2, '0')
+      )
       .join('')
   );
 }
 
 const CATEGORY_LABELS: Record<DetectedImageCategory, string> = {
-  monochrome_logo: 'Logo monocromático / Alto contraste',
-  color_logo: 'Logo colorido / Arte vetorial plana',
-  icon_drawing: 'Ícone / Desenho de traço nítido',
-  illustration_pattern: 'Ilustração / Estampa multicor',
-  detailed_artwork: 'Arte rica em pequenos detalhes',
-  photograph: 'Fotografia / Imagem de tons contínuos',
+  gradient_logo: 'Logo colorido com degradês',
+  solid_logo: 'Logo / Ícone com cores sólidas',
+  complex_illustration: 'Ilustração complexa / Estampa',
+  monochrome_drawing: 'Desenho / Arte monocromática',
+  typography_text: 'Texto e tipografia em destaque',
+  photograph: 'Fotografia / Tons contínuos',
 };
 
-function computePercentileFromHist(hist: Int32Array, total: number, quantile: number): number {
+const STRATEGY_SUMMARIES: Record<DetectedImageCategory, string> = {
+  gradient_logo:
+    'Cores 24-bit sem limite + super-amostragem sub-pixel + reconstrução nativa de gradientes SVG e nitidez tipográfica.',
+  solid_logo:
+    'Separação nítida de camadas empilhadas + curvas Bézier precisas sem serrilhados e proteção de cantos/pontas.',
+  complex_illustration:
+    'Paleta 24-bit completa + alta retenção de microformas, sombras, contornos finos e transições cromáticas.',
+  monochrome_drawing:
+    'Traçado Bézier monocromático sub-pixel de alto contraste preservando traços finos e extremidades.',
+  typography_text:
+    'Modo tipográfico dedicado 3× sem simplificação destrutiva, preservando hastes, serifas e olhos das letras.',
+  photograph:
+    'Segmentação hierárquica 24-bit de alta densidade cromática sem posterização forçada.',
+};
+
+function computePercentileFromHist(
+  hist: Int32Array,
+  total: number,
+  quantile: number
+): number {
   if (total <= 0) return 0;
   const target = Math.max(1, Math.round(total * quantile));
   let acc = 0;
@@ -38,88 +61,88 @@ function computePercentileFromHist(hist: Int32Array, total: number, quantile: nu
 function buildRecommendedParameters(
   category: DetectedImageCategory,
   metrics: {
-    estimatedDistinctColors: number;
-    fineColorBins: number;
     noiseLevel: number;
     smallDetailDensity: number;
-    gradientRatio: number;
   }
 ): TunedSliderValues {
-  // Ajusta remoção de ruído proporcionalmente ao ruído medido, protegendo detalhes finos
-  const detailProtectionCap = metrics.smallDetailDensity > 0.14 ? 22 : 65;
-  const adaptiveNoise = Math.min(
-    detailProtectionCap,
-    Math.max(8, Math.round(12 + metrics.noiseLevel * 0.65))
-  );
+  // NUNCA aplica filtro de ruído automaticamente em imagens limpas (preserva 100% dos detalhes originais!)
+  const safeNoiseRemoval =
+    metrics.noiseLevel <= 10
+      ? 0
+      : Math.min(
+          metrics.smallDetailDensity > 0.1 ? 18 : 32,
+          Math.round((metrics.noiseLevel - 10) * 0.5)
+        );
 
   switch (category) {
-    case 'monochrome_logo':
+    case 'gradient_logo':
+      return {
+        colorCount: 256, // Sem limite artificial de cores (24-bit completo)
+        detailPrecision: 96,
+        curveSmoothness: 68,
+        pathSimplification: 0, // Sem simplificação destrutiva de pontas/asas/letras
+        noiseRemoval: safeNoiseRemoval,
+        contourSensitivity: 86,
+      };
+
+    case 'solid_logo':
+      return {
+        colorCount: 128,
+        detailPrecision: 92,
+        curveSmoothness: 72,
+        pathSimplification: 6,
+        noiseRemoval: safeNoiseRemoval,
+        contourSensitivity: 84,
+      };
+
+    case 'typography_text':
+      return {
+        colorCount: 128,
+        detailPrecision: 98,
+        curveSmoothness: 58,
+        pathSimplification: 0,
+        noiseRemoval: 0,
+        contourSensitivity: 92,
+      };
+
+    case 'monochrome_drawing':
       return {
         colorCount: 2,
-        detailPrecision: metrics.smallDetailDensity > 0.12 ? 86 : 78,
-        curveSmoothness: 80,
-        pathSimplification: metrics.smallDetailDensity > 0.12 ? 20 : 38,
-        noiseRemoval: Math.max(18, adaptiveNoise),
-        contourSensitivity: 74,
-      };
-
-    case 'icon_drawing':
-      return {
-        colorCount: Math.max(2, Math.min(8, metrics.estimatedDistinctColors + 1)),
-        detailPrecision: 86,
-        curveSmoothness: 72,
-        pathSimplification: 22,
-        noiseRemoval: Math.min(28, adaptiveNoise),
-        contourSensitivity: 82,
-      };
-
-    case 'color_logo':
-      return {
-        colorCount: Math.max(4, Math.min(16, metrics.estimatedDistinctColors + 2)),
-        detailPrecision: 82,
-        curveSmoothness: 82,
-        pathSimplification: 32,
-        noiseRemoval: Math.max(16, adaptiveNoise),
-        contourSensitivity: 76,
-      };
-
-    case 'detailed_artwork':
-      return {
-        colorCount: Math.max(16, Math.min(48, Math.round(metrics.fineColorBins * 0.45))),
-        detailPrecision: 92,
-        curveSmoothness: 55,
-        pathSimplification: 8,
-        noiseRemoval: Math.min(15, adaptiveNoise),
-        contourSensitivity: 88,
+        detailPrecision: 94,
+        curveSmoothness: 70,
+        pathSimplification: 5,
+        noiseRemoval: safeNoiseRemoval,
+        contourSensitivity: 80,
       };
 
     case 'photograph':
       return {
-        colorCount: 40,
-        detailPrecision: 84,
-        curveSmoothness: 58,
-        pathSimplification: 18,
-        noiseRemoval: Math.max(20, Math.min(45, adaptiveNoise)),
-        contourSensitivity: 70,
+        colorCount: 256,
+        detailPrecision: 92,
+        curveSmoothness: 60,
+        pathSimplification: 6,
+        noiseRemoval: Math.max(safeNoiseRemoval, metrics.noiseLevel > 15 ? 18 : 0),
+        contourSensitivity: 78,
       };
 
-    case 'illustration_pattern':
+    case 'complex_illustration':
     default:
       return {
-        colorCount: Math.max(12, Math.min(32, metrics.estimatedDistinctColors + 4)),
-        detailPrecision: 80,
-        curveSmoothness: 68,
-        pathSimplification: 24,
-        noiseRemoval: adaptiveNoise,
-        contourSensitivity: 74,
+        colorCount: 256,
+        detailPrecision: 95,
+        curveSmoothness: 64,
+        pathSimplification: 0,
+        noiseRemoval: safeNoiseRemoval,
+        contourSensitivity: 86,
       };
   }
 }
 
 /**
- * Inteligência de análise de imagem: avalia 8 critérios reais (cores, contraste, complexidade,
- * contornos, gradientes, transparência, ruídos e detalhes pequenos) para selecionar o motor
- * e calibrar parâmetros sob medida para cada categoria de imagem.
+ * Inteligência adaptativa de análise de imagem:
+ * Avalia cores reais, contraste, contornos, gradientes, transparência, ruído, detalhes pequenos
+ * e regiões de tipografia, classificando em 6 estratégias específicas e garantindo que Potrace
+ * jamais seja usado em imagens coloridas ou com degradês.
  */
 export function analyzeImageColors(image: RawRgbaImage): ColorAnalysisReport {
   const { data, width, height } = image;
@@ -127,12 +150,12 @@ export function analyzeImageColors(image: RawRgbaImage): ColorAnalysisReport {
 
   if (totalPixels === 0 || data.length < totalPixels * 4) {
     const fallbackParams: TunedSliderValues = {
-      colorCount: 16,
-      detailPrecision: 75,
-      curveSmoothness: 68,
-      pathSimplification: 30,
-      noiseRemoval: 25,
-      contourSensitivity: 70,
+      colorCount: 256,
+      detailPrecision: 94,
+      curveSmoothness: 66,
+      pathSimplification: 0,
+      noiseRemoval: 0,
+      contourSensitivity: 84,
     };
     return {
       width,
@@ -149,18 +172,23 @@ export function analyzeImageColors(image: RawRgbaImage): ColorAnalysisReport {
       gradientRatio: 0,
       noiseLevel: 0,
       smallDetailDensity: 0,
+      hasTypography: false,
+      typographyRegions: [],
       isMonochromeCandidate: false,
-      detectedCategory: 'illustration_pattern',
-      categoryLabel: CATEGORY_LABELS.illustration_pattern,
+      detectedCategory: 'complex_illustration',
+      categoryLabel: CATEGORY_LABELS.complex_illustration,
+      adaptiveStrategySummary: STRATEGY_SUMMARIES.complex_illustration,
       dominantHexColors: [],
       recommendedEngine: 'vtracer',
       recommendedParameters: fallbackParams,
     };
   }
 
-  // 1. Análise de paleta, luminância e transparência
   const stride = Math.max(1, Math.floor(totalPixels / 65536));
-  const coarseBuckets = new Map<number, { count: number; rSum: number; gSum: number; bSum: number }>();
+  const coarseBuckets = new Map<
+    number,
+    { count: number; rSum: number; gSum: number; bSum: number }
+  >();
   const fineBuckets = new Map<number, number>();
   const lumHistogram = new Int32Array(256);
 
@@ -170,6 +198,7 @@ export function analyzeImageColors(image: RawRgbaImage): ColorAnalysisReport {
   let opaqueLumSum = 0;
   let nearExtremeLuminanceCount = 0;
   let lowSaturationCount = 0;
+  let highSaturationCount = 0;
 
   for (let px = 0; px < totalPixels; px += stride) {
     const offset = px * 4;
@@ -197,8 +226,11 @@ export function analyzeImageColors(image: RawRgbaImage): ColorAnalysisReport {
 
     const maxCh = Math.max(r, g, b);
     const minCh = Math.min(r, g, b);
-    if (maxCh - minCh <= 24) {
+    const chroma = maxCh - minCh;
+    if (chroma <= 22) {
       lowSaturationCount++;
+    } else if (chroma >= 45) {
+      highSaturationCount++;
     }
 
     const coarseKey = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
@@ -216,20 +248,22 @@ export function analyzeImageColors(image: RawRgbaImage): ColorAnalysisReport {
     fineBuckets.set(fineKey, (fineBuckets.get(fineKey) ?? 0) + 1);
   }
 
-  const minSignificantCoarse = Math.max(1, Math.floor(opaqueSamples * 0.0025));
+  const minSignificantCoarse = Math.max(1, Math.floor(opaqueSamples * 0.002));
   const significantBuckets = [...coarseBuckets.values()]
     .filter((entry) => entry.count >= minSignificantCoarse)
     .sort((a, b) => b.count - a.count);
 
-  const minSignificantFine = Math.max(1, Math.floor(opaqueSamples * 0.0008));
+  const minSignificantFine = Math.max(1, Math.floor(opaqueSamples * 0.0006));
   let fineColorBins = 0;
   for (const count of fineBuckets.values()) {
     if (count >= minSignificantFine) fineColorBins++;
   }
 
-  const dominantHexColors = significantBuckets.slice(0, 8).map((entry) =>
-    rgbToHex(entry.rSum / entry.count, entry.gSum / entry.count, entry.bSum / entry.count)
-  );
+  const dominantHexColors = significantBuckets
+    .slice(0, 8)
+    .map((entry) =>
+      rgbToHex(entry.rSum / entry.count, entry.gSum / entry.count, entry.bSum / entry.count)
+    );
 
   const transparentPixelRatio = sampledPixels > 0 ? transparentCount / sampledPixels : 0;
   const meanOpaqueLuminance = opaqueSamples > 0 ? opaqueLumSum / opaqueSamples : 128;
@@ -237,15 +271,13 @@ export function analyzeImageColors(image: RawRgbaImage): ColorAnalysisReport {
   const p02 = computePercentileFromHist(lumHistogram, opaqueSamples, 0.02);
   const p98 = computePercentileFromHist(lumHistogram, opaqueSamples, 0.98);
   const compositeLumContrast = opaqueSamples > 0 ? (p98 - p02) / 255 : 0;
-  // Quando há fundo transparente + figura monocromática uniforme (ex.: logo todo preto ou todo branco em PNG transparente), há contraste alfa-figura máximo
   const luminanceContrast =
     transparentPixelRatio >= 0.08 && transparentPixelRatio <= 0.96
       ? Math.max(compositeLumContrast, 0.85)
       : compositeLumContrast;
 
-  // 2. Análise espacial 2D: contornos, gradientes suaves, ruídos isolados e detalhes pequenos
-  const gridW = Math.min(width, 240);
-  const gridH = Math.min(height, 240);
+  const gridW = Math.min(width, 260);
+  const gridH = Math.min(height, 260);
   const lumGrid = new Float32Array(gridW * gridH);
 
   for (let gy = 0; gy < gridH; gy++) {
@@ -254,7 +286,6 @@ export function analyzeImageColors(image: RawRgbaImage): ColorAnalysisReport {
       const srcX = Math.min(width - 1, Math.floor((gx * width) / gridW));
       const idx = (srcY * width + srcX) * 4;
       const alpha = data[idx + 3] / 255;
-      // Compõe contra cinza neutro contrastante caso haja transparência para medir bordas alfa também
       const bg = meanOpaqueLuminance > 180 ? 20 : 245;
       const r = data[idx] * alpha + bg * (1 - alpha);
       const g = data[idx + 1] * alpha + bg * (1 - alpha);
@@ -282,27 +313,25 @@ export function analyzeImageColors(image: RawRgbaImage): ColorAnalysisReport {
       const gy = Math.abs(down - up);
       const gradMag = gx + gy;
 
-      if (gradMag >= 34) {
+      if (gradMag >= 32) {
         sharpEdgePixels++;
-      } else if (gradMag >= 5) {
+      } else if (gradMag >= 4) {
         smoothGradPixels++;
       }
 
-      // Detecção de ruído isolado (center difere da vizinhança, mas vizinhos concordam entre si)
       const neighborMean = (left + right + up + down) * 0.25;
       const neighborSpread = Math.max(Math.abs(left - right), Math.abs(up - down));
-      if (Math.abs(c - neighborMean) >= 18 && neighborSpread <= 12) {
+      if (Math.abs(c - neighborMean) >= 20 && neighborSpread <= 10) {
         noiseOutlierPixels++;
       }
 
-      // Detecção de traços finos / microdetalhes (inversão rápida de sinal na derivada local)
       const d1x = c - left;
       const d2x = right - c;
       const d1y = c - up;
       const d2y = down - c;
       if (
-        (d1x * d2x < -140 && Math.abs(d1x) > 12 && Math.abs(d2x) > 12) ||
-        (d1y * d2y < -140 && Math.abs(d1y) > 12 && Math.abs(d2y) > 12)
+        (d1x * d2x < -130 && Math.abs(d1x) > 11 && Math.abs(d2x) > 11) ||
+        (d1y * d2y < -130 && Math.abs(d1y) > 11 && Math.abs(d2y) > 11)
       ) {
         fineFlipPixels++;
       }
@@ -318,9 +347,9 @@ export function analyzeImageColors(image: RawRgbaImage): ColorAnalysisReport {
 
   const estimatedDistinctColors = Math.max(1, significantBuckets.length);
   const lowSatRatio = opaqueSamples > 0 ? lowSaturationCount / opaqueSamples : 0;
+  const highSatRatio = opaqueSamples > 0 ? highSaturationCount / opaqueSamples : 0;
   const bimodalRatio = opaqueSamples > 0 ? nearExtremeLuminanceCount / opaqueSamples : 0;
 
-  // Complexidade global combinada (0..100)
   const complexityScore = Math.min(
     100,
     Math.round(
@@ -331,7 +360,7 @@ export function analyzeImageColors(image: RawRgbaImage): ColorAnalysisReport {
     )
   );
 
-  // Verifica espalhamento cromático entre os buckets opacos significativos
+  // Avalia espalhamento cromático estrito para garantir que Potrace NUNCA rode em imagens coloridas
   let maxOpaqueColorSpread = 0;
   if (significantBuckets.length >= 2) {
     const top = significantBuckets[0];
@@ -350,14 +379,13 @@ export function analyzeImageColors(image: RawRgbaImage): ColorAnalysisReport {
     }
   }
 
-  // Agrupa buckets opacos próximos (ex.: suavização de bordas/anti-aliasing entre tinta e papel branco)
   const colorClusters: Array<{ r: number; g: number; b: number; lum: number; count: number }> = [];
   for (const b of significantBuckets) {
     const r = b.rSum / b.count;
     const g = b.gSum / b.count;
     const bl = b.bSum / b.count;
     const lum = 0.2126 * r + 0.7152 * g + 0.0722 * bl;
-    const match = colorClusters.find((c) => Math.hypot(c.r - r, c.g - g, c.b - bl) <= 48);
+    const match = colorClusters.find((c) => Math.hypot(c.r - r, c.g - g, c.b - bl) <= 44);
     if (match) {
       match.count += b.count;
     } else {
@@ -365,55 +393,66 @@ export function analyzeImageColors(image: RawRgbaImage): ColorAnalysisReport {
     }
   }
 
-  // 1) Silhueta de cor única sobre fundo transparente (preserva inclusive branco sobre transparente; exclui ícones bicolores + alfa)
   const isSingleColorOnAlpha =
     transparentPixelRatio >= 0.08 &&
-    transparentPixelRatio <= 0.97 &&
-    maxOpaqueColorSpread <= 48 &&
-    gradientRatio < 0.42;
+    transparentPixelRatio <= 0.98 &&
+    maxOpaqueColorSpread <= 36 &&
+    fineColorBins <= 8 &&
+    gradientRatio < 0.34;
 
-  // 2) Arte/logo monocromático clássico de tinta escura sobre fundo branco opaco
   const hasWhitePaperAndSingleDarkInk =
     transparentPixelRatio < 0.08 &&
     colorClusters.length === 2 &&
+    highSatRatio < 0.05 &&
     Math.max(colorClusters[0].lum, colorClusters[1].lum) >= 238 &&
     Math.min(colorClusters[0].lum, colorClusters[1].lum) <= 80;
 
   const isClassicBimodalMono =
     opaqueSamples > 0 &&
+    highSatRatio < 0.04 &&
     (hasWhitePaperAndSingleDarkInk ||
       (colorClusters.length <= 2 &&
-        lowSatRatio >= 0.88 &&
-        bimodalRatio >= 0.68 &&
+        lowSatRatio >= 0.92 &&
+        bimodalRatio >= 0.72 &&
         transparentPixelRatio < 0.08)) &&
-    luminanceContrast >= 0.35 &&
-    gradientRatio < 0.45;
+    luminanceContrast >= 0.38 &&
+    gradientRatio < 0.38;
 
   const isMonochromeCandidate = isSingleColorOnAlpha || isClassicBimodalMono;
 
-  // Classificação automática entre as categorias
+  // Reconhecimento estrutural de regiões tipográficas
+  const typographyRegions = detectTypographyRegions(image);
+  const hasTypography = typographyRegions.length > 0;
+  const typographyAreaRatio =
+    typographyRegions.reduce((acc, r) => acc + r.width * r.height, 0) / Math.max(1, totalPixels);
+
+  // Classificação adaptativa entre as 6 classes estratégicas
   let detectedCategory: DetectedImageCategory;
-  if (isMonochromeCandidate) {
-    detectedCategory = smallDetailDensity > 0.14 ? 'icon_drawing' : 'monochrome_logo';
-  } else if (fineColorBins >= 75 && gradientRatio >= 0.52) {
+  if (hasTypography && typographyAreaRatio >= 0.32 && fineColorBins <= 35) {
+    detectedCategory = 'typography_text';
+  } else if (isMonochromeCandidate) {
+    detectedCategory = 'monochrome_drawing';
+  } else if (
+    fineColorBins >= 85 &&
+    gradientRatio >= 0.54 &&
+    transparentPixelRatio < 0.05
+  ) {
     detectedCategory = 'photograph';
-  } else if (smallDetailDensity >= 0.11 || (edgeDensity >= 0.22 && fineColorBins >= 20)) {
-    detectedCategory = 'detailed_artwork';
-  } else if (estimatedDistinctColors <= 6 && gradientRatio < 0.38) {
-    detectedCategory = edgeDensity >= 0.12 ? 'icon_drawing' : 'color_logo';
-  } else if (estimatedDistinctColors <= 14 && gradientRatio < 0.48) {
-    detectedCategory = 'color_logo';
+  } else if (
+    (gradientRatio >= 0.26 && fineColorBins >= 14 && (transparentPixelRatio >= 0.04 || colorClusters.length <= 12)) ||
+    (fineColorBins >= 16 && fineColorBins <= 90 && gradientRatio >= 0.32)
+  ) {
+    detectedCategory = 'gradient_logo';
+  } else if (colorClusters.length <= 8 && fineColorBins <= 22 && gradientRatio < 0.34) {
+    detectedCategory = 'solid_logo';
   } else {
-    detectedCategory = 'illustration_pattern';
+    detectedCategory = 'complex_illustration';
   }
 
-  const recommendedEngine: VectorEngineKind = isMonochromeCandidate ? 'potrace' : 'vtracer';
+  const recommendedEngine: 'vtracer' | 'potrace' = isMonochromeCandidate ? 'potrace' : 'vtracer';
   const recommendedParameters = buildRecommendedParameters(detectedCategory, {
-    estimatedDistinctColors,
-    fineColorBins,
     noiseLevel,
     smallDetailDensity,
-    gradientRatio,
   });
 
   return {
@@ -431,9 +470,12 @@ export function analyzeImageColors(image: RawRgbaImage): ColorAnalysisReport {
     gradientRatio,
     noiseLevel,
     smallDetailDensity,
+    hasTypography,
+    typographyRegions,
     isMonochromeCandidate,
     detectedCategory,
     categoryLabel: CATEGORY_LABELS[detectedCategory],
+    adaptiveStrategySummary: STRATEGY_SUMMARIES[detectedCategory],
     dominantHexColors,
     recommendedEngine,
     recommendedParameters,

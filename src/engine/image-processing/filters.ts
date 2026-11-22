@@ -2,15 +2,24 @@ import type { RawRgbaImage } from '../types';
 
 export const MIN_IMAGE_DIMENSION = 8;
 export const MAX_IMAGE_DIMENSION = 8192;
-export const DEFAULT_MAX_WORKING_DIMENSION = 2048;
+export const DEFAULT_MAX_WORKING_DIMENSION = 2400;
 
 export function validateImageDimensions(width: number, height: number): void {
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width < MIN_IMAGE_DIMENSION || height < MIN_IMAGE_DIMENSION) {
+  if (
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    width < MIN_IMAGE_DIMENSION ||
+    height < MIN_IMAGE_DIMENSION
+  ) {
     throw new Error(
       `Dimensões muito pequenas (${width}×${height} px). Envie uma imagem com pelo menos ${MIN_IMAGE_DIMENSION}×${MIN_IMAGE_DIMENSION} pixels.`
     );
   }
-  if (width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION || width * height > 36_000_000) {
+  if (
+    width > MAX_IMAGE_DIMENSION ||
+    height > MAX_IMAGE_DIMENSION ||
+    width * height > 36_000_000
+  ) {
     throw new Error(
       `Dimensões excedem o limite seguro de memória (${width}×${height} px). O máximo suportado é ${MAX_IMAGE_DIMENSION}×${MAX_IMAGE_DIMENSION} px (até 36 MP).`
     );
@@ -93,16 +102,178 @@ export function downscaleRgbaIfNeeded(
   };
 }
 
+function catmullRomWeight(t: number): [number, number, number, number] {
+  const t2 = t * t;
+  const t3 = t2 * t;
+  // Catmull-Rom (a = -0.5): interpola exatamente pelos pontos originais com tangentes C1 contínuas
+  const w0 = -0.5 * t + t2 - 0.5 * t3;
+  const w1 = 1.0 - 2.5 * t2 + 1.5 * t3;
+  const w2 = 0.5 * t + 2.0 * t2 - 1.5 * t3;
+  const w3 = -0.5 * t2 + 0.5 * t3;
+  return [w0, w1, w2, w3];
+}
+
 /**
- * Limpa resíduos quase invisíveis no canal alfa (alpha <= 10) para evitar polígonos fantasmas
- * em regiões transparentes, preservando totalmente a cor original nas áreas opacas e semitransparentes.
+ * Super-amostragem sub-pixel bicúbica Catmull-Rom monotônica (clamped) em espaço alfa pré-multiplicado.
+ * Elimina o serrilhado de grade de 1px em asas, diagonais, pontas finas e tipografia ANTES da
+ * reconstrução de splines Bézier, sem jamais introduzir halos de overshoot (ringing) nas bordas.
+ */
+export function upscaleRgbaCatmullRom(
+  image: RawRgbaImage,
+  scaleFactor: 2 | 3
+): RawRgbaImage {
+  const { width: srcW, height: srcH, data: src } = image;
+  const dstW = srcW * scaleFactor;
+  const dstH = srcH * scaleFactor;
+
+  // Passo 1: Interpolação horizontal (srcW -> dstW, altura srcH) em float pré-multiplicado
+  const horiz = new Float32Array(dstW * srcH * 4);
+
+  const xIndices = new Int32Array(dstW * 4);
+  const xWeights = new Float32Array(dstW * 4);
+  for (let dx = 0; dx < dstW; dx++) {
+    const srcPos = (dx + 0.5) / scaleFactor - 0.5;
+    const ix = Math.floor(srcPos);
+    const t = srcPos - ix;
+    const [w0, w1, w2, w3] = catmullRomWeight(t);
+    const base = dx * 4;
+    xIndices[base] = Math.max(0, Math.min(srcW - 1, ix - 1));
+    xIndices[base + 1] = Math.max(0, Math.min(srcW - 1, ix));
+    xIndices[base + 2] = Math.max(0, Math.min(srcW - 1, ix + 1));
+    xIndices[base + 3] = Math.max(0, Math.min(srcW - 1, ix + 2));
+    xWeights[base] = w0;
+    xWeights[base + 1] = w1;
+    xWeights[base + 2] = w2;
+    xWeights[base + 3] = w3;
+  }
+
+  for (let y = 0; y < srcH; y++) {
+    const srcRow = y * srcW * 4;
+    const dstRow = y * dstW * 4;
+    for (let dx = 0; dx < dstW; dx++) {
+      const k = dx * 4;
+      const i0 = srcRow + xIndices[k] * 4;
+      const i1 = srcRow + xIndices[k + 1] * 4;
+      const i2 = srcRow + xIndices[k + 2] * 4;
+      const i3 = srcRow + xIndices[k + 3] * 4;
+      const w0 = xWeights[k];
+      const w1 = xWeights[k + 1];
+      const w2 = xWeights[k + 2];
+      const w3 = xWeights[k + 3];
+
+      const a0 = src[i0 + 3] / 255;
+      const a1 = src[i1 + 3] / 255;
+      const a2 = src[i2 + 3] / 255;
+      const a3 = src[i3 + 3] / 255;
+
+      const p1r = src[i1] * a1;
+      const p2r = src[i2] * a2;
+      const p1g = src[i1 + 1] * a1;
+      const p2g = src[i2 + 1] * a2;
+      const p1b = src[i1 + 2] * a1;
+      const p2b = src[i2 + 2] * a2;
+
+      const rVal = src[i0] * a0 * w0 + p1r * w1 + p2r * w2 + src[i3] * a3 * w3;
+      const gVal = src[i0 + 1] * a0 * w0 + p1g * w1 + p2g * w2 + src[i3 + 1] * a3 * w3;
+      const bVal = src[i0 + 2] * a0 * w0 + p1b * w1 + p2b * w2 + src[i3 + 2] * a3 * w3;
+      const aVal = a0 * w0 + a1 * w1 + a2 * w2 + a3 * w3;
+
+      // Clamping monotônico entre os vizinhos centrais (zero halo/overshoot!)
+      const outIdx = dstRow + k;
+      horiz[outIdx] = Math.max(Math.min(p1r, p2r), Math.min(Math.max(p1r, p2r), rVal));
+      horiz[outIdx + 1] = Math.max(Math.min(p1g, p2g), Math.min(Math.max(p1g, p2g), gVal));
+      horiz[outIdx + 2] = Math.max(Math.min(p1b, p2b), Math.min(Math.max(p1b, p2b), bVal));
+      horiz[outIdx + 3] = Math.max(Math.min(a1, a2), Math.min(Math.max(a1, a2), aVal));
+    }
+  }
+
+  // Passo 2: Interpolação vertical (srcH -> dstH) e desmultiplicação por alfa
+  const out = new Uint8Array(dstW * dstH * 4);
+  for (let dy = 0; dy < dstH; dy++) {
+    const srcPos = (dy + 0.5) / scaleFactor - 0.5;
+    const iy = Math.floor(srcPos);
+    const t = srcPos - iy;
+    const [w0, w1, w2, w3] = catmullRomWeight(t);
+
+    const r0 = Math.max(0, Math.min(srcH - 1, iy - 1)) * dstW * 4;
+    const r1 = Math.max(0, Math.min(srcH - 1, iy)) * dstW * 4;
+    const r2 = Math.max(0, Math.min(srcH - 1, iy + 1)) * dstW * 4;
+    const r3 = Math.max(0, Math.min(srcH - 1, iy + 2)) * dstW * 4;
+
+    const dstRow = dy * dstW * 4;
+    for (let dx = 0; dx < dstW; dx++) {
+      const col = dx * 4;
+      const p1r = horiz[r1 + col];
+      const p2r = horiz[r2 + col];
+      const p1g = horiz[r1 + col + 1];
+      const p2g = horiz[r2 + col + 1];
+      const p1b = horiz[r1 + col + 2];
+      const p2b = horiz[r2 + col + 2];
+      const a1 = horiz[r1 + col + 3];
+      const a2 = horiz[r2 + col + 3];
+
+      const rPm = Math.max(
+        Math.min(p1r, p2r),
+        Math.min(
+          Math.max(p1r, p2r),
+          horiz[r0 + col] * w0 + p1r * w1 + p2r * w2 + horiz[r3 + col] * w3
+        )
+      );
+      const gPm = Math.max(
+        Math.min(p1g, p2g),
+        Math.min(
+          Math.max(p1g, p2g),
+          horiz[r0 + col + 1] * w0 + p1g * w1 + p2g * w2 + horiz[r3 + col + 1] * w3
+        )
+      );
+      const bPm = Math.max(
+        Math.min(p1b, p2b),
+        Math.min(
+          Math.max(p1b, p2b),
+          horiz[r0 + col + 2] * w0 + p1b * w1 + p2b * w2 + horiz[r3 + col + 2] * w3
+        )
+      );
+      const aFinal = Math.max(
+        Math.min(a1, a2),
+        Math.min(
+          Math.max(a1, a2),
+          horiz[r0 + col + 3] * w0 + a1 * w1 + a2 * w2 + horiz[r3 + col + 3] * w3
+        )
+      );
+
+      const outIdx = dstRow + col;
+      if (aFinal <= 0.015) {
+        out[outIdx] = 0;
+        out[outIdx + 1] = 0;
+        out[outIdx + 2] = 0;
+        out[outIdx + 3] = 0;
+      } else {
+        out[outIdx] = Math.max(0, Math.min(255, Math.round(rPm / aFinal)));
+        out[outIdx + 1] = Math.max(0, Math.min(255, Math.round(gPm / aFinal)));
+        out[outIdx + 2] = Math.max(0, Math.min(255, Math.round(bPm / aFinal)));
+        out[outIdx + 3] = Math.max(0, Math.min(255, Math.round(aFinal * 255)));
+      }
+    }
+  }
+
+  return {
+    data: out,
+    width: dstW,
+    height: dstH,
+    sourceFormat: image.sourceFormat,
+  };
+}
+
+/**
+ * Limpa resíduos quase invisíveis no canal alfa (alpha <= 6) para evitar polígonos fantasmas
+ * em regiões transparentes, preservando totalmente bordas suaves e semitransparentes.
  */
 export function cleanAlphaFringes(image: RawRgbaImage): RawRgbaImage {
   const { data, width, height } = image;
   let hasLowAlphaNoise = false;
 
   for (let i = 3; i < data.length; i += 4) {
-    if (data[i] > 0 && data[i] <= 10) {
+    if (data[i] > 0 && data[i] <= 6) {
       hasLowAlphaNoise = true;
       break;
     }
@@ -115,7 +286,7 @@ export function cleanAlphaFringes(image: RawRgbaImage): RawRgbaImage {
   const out = new Uint8Array(data.length);
   out.set(data);
   for (let i = 0; i < out.length; i += 4) {
-    if (out[i + 3] <= 10) {
+    if (out[i + 3] <= 6) {
       out[i] = 0;
       out[i + 1] = 0;
       out[i + 2] = 0;
@@ -132,11 +303,13 @@ export function cleanAlphaFringes(image: RawRgbaImage): RawRgbaImage {
 }
 
 /**
- * Filtro mediano seletivo 3x3 preservador de bordas para redução de ruídos de compressão (JPEG/WebP)
- * e manchas isoladas sem borrar contornos nítidos nem apagar detalhes finos.
+ * Filtro seletivo preservador de detalhes:
+ * - Quando strengthPercent <= 15 (padrão de alta fidelidade): NÃO altera um único pixel da imagem original!
+ * - Quando acionado pelo usuário ou por ruído severo de compressão: remove apenas outliers isolados (1px)
+ *   protegendo integralmente traços contínuos, pontas, serrilhas tipográficas e microdetalhes.
  */
 export function reduceImageNoise(image: RawRgbaImage, strengthPercent: number): RawRgbaImage {
-  if (strengthPercent <= 10 || image.width < 3 || image.height < 3) {
+  if (strengthPercent <= 15 || image.width < 3 || image.height < 3) {
     return image;
   }
 
@@ -144,7 +317,7 @@ export function reduceImageNoise(image: RawRgbaImage, strengthPercent: number): 
   const out = new Uint8Array(data.length);
   out.set(data);
 
-  const outlierThreshold = Math.max(16, Math.round(96 - strengthPercent * 0.68));
+  const outlierThreshold = Math.max(24, Math.round(105 - strengthPercent * 0.65));
   const rWin = new Int32Array(9);
   const gWin = new Int32Array(9);
   const bWin = new Int32Array(9);
@@ -173,14 +346,17 @@ export function reduceImageNoise(image: RawRgbaImage, strengthPercent: number): 
           bWin[k] = nb;
           k++;
 
-          if ((dx !== 0 || dy !== 0) && Math.abs(nr - cr) + Math.abs(ng - cg) + Math.abs(nb - cb) <= 28) {
+          if (
+            (dx !== 0 || dy !== 0) &&
+            Math.abs(nr - cr) + Math.abs(ng - cg) + Math.abs(nb - cb) <= 34
+          ) {
             matchingNeighbors++;
           }
         }
       }
 
-      // Protege linhas finas contínuas (se >= 2 vizinhos já têm a mesma cor do pixel central, é traço real e não ruído isolado)
-      if (matchingNeighbors >= 2 && strengthPercent < 75) {
+      // Nunca apaga nem arredonda pontas/traços conectados (mesmo 1 vizinho conectado já protege pontas finas!)
+      if (matchingNeighbors >= 1 && strengthPercent < 85) {
         continue;
       }
 
@@ -226,7 +402,7 @@ export interface MonochromeBinarizationResult {
 
 /**
  * Binariza imagens monocromáticas preservando:
- * 1) Logos escuros/coloridos sobre fundo claro ou transparente (via Otsu + sensibilidade);
+ * 1) Logos escuros sobre fundo claro ou transparente (via Otsu + sensibilidade);
  * 2) Logos claros/brancos sobre fundo transparente (via máscara de opacidade alfa + cor real preservada).
  */
 export function binarizeForMonochromeWithColor(
@@ -263,9 +439,11 @@ export function binarizeForMonochromeWithColor(
   const transparentRatio = totalPixels > 0 ? transparentPixels / totalPixels : 0;
   const meanOpaqueLum = opaqueCount > 0 ? opaqueLumSum / opaqueCount : 0;
 
-  // Caso especial importante: figura clara/branca recortada em fundo transparente
   if (transparentRatio >= 0.08 && opaqueCount > 0 && meanOpaqueLum >= 200) {
-    const alphaThreshold = Math.max(40, Math.min(215, Math.round(165 - ((contourSensitivity - 50) / 50) * 60)));
+    const alphaThreshold = Math.max(
+      40,
+      Math.min(215, Math.round(150 - ((contourSensitivity - 50) / 50) * 55))
+    );
     const out = new Uint8Array(data.length);
 
     for (let px = 0; px < totalPixels; px++) {
@@ -290,7 +468,6 @@ export function binarizeForMonochromeWithColor(
     };
   }
 
-  // Caso geral: compõe sobre branco e calcula limiar ótimo de Otsu
   const histogram = new Int32Array(256);
   const luminances = new Uint8Array(totalPixels);
 
@@ -330,7 +507,7 @@ export function binarizeForMonochromeWithColor(
     }
   }
 
-  const sensitivityShift = Math.round(((contourSensitivity - 55) / 45) * 25);
+  const sensitivityShift = Math.round(((contourSensitivity - 55) / 45) * 20);
   const finalThreshold = Math.max(18, Math.min(238, otsuThreshold + sensitivityShift));
 
   const out = new Uint8Array(data.length);

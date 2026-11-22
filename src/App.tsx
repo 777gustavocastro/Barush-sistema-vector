@@ -3,6 +3,7 @@ import type {
   AdvancedSettings,
   CanvasBackground,
   ComparisonMode,
+  ResultOutputMode,
   SourceImageInfo,
   VectorizationPipelineResult,
   VectorizationProgressEvent,
@@ -32,6 +33,7 @@ export function App() {
   const [uiState, setUIState] = useState<VectorizerUIState>('initial');
   const [sourceImage, setSourceImage] = useState<SourceImageInfo | null>(null);
   const [selectedProfile, setSelectedProfile] = useState<VectorizerProfileId>('auto');
+  const [outputMode, setOutputMode] = useState<ResultOutputMode>('editable_vector');
   const [advancedSettings, setAdvancedSettings] = useState<AdvancedSettings>({
     ...DEFAULT_ADVANCED_SETTINGS,
   });
@@ -172,8 +174,12 @@ export function App() {
         sourceImage.rgbaImage,
         {
           profile: selectedProfile,
+          outputMode,
           engine: 'auto',
-          autoTune: false, // Respeita fielmente os valores exibidos/ajustados nos controles da interface
+          autoTune: false,
+          reconstructGradients: true,
+          enhanceTypography: true,
+          subpixelUpscale: true,
           colorCount: advancedSettings.colorCount,
           detailPrecision: advancedSettings.detailPrecision,
           curveSmoothness: advancedSettings.curveSmoothness,
@@ -210,12 +216,14 @@ export function App() {
         abortControllerRef.current = null;
       }
     }
-  }, [advancedSettings, selectedProfile, sourceImage]);
+  }, [advancedSettings, outputMode, selectedProfile, sourceImage]);
 
   const handleDownloadSvg = useCallback(() => {
     if (!vectorResult || !sourceImage) return;
 
-    const validation = validateSvgStructure(vectorResult.svg);
+    const validation = validateSvgStructure(vectorResult.svg, {
+      allowHybridRaster: vectorResult.isHybridRasterSvg,
+    });
     if (!validation.valid) {
       setErrorMessage(
         `O arquivo SVG não passou na validação pré-download: ${validation.errors.join(' ')}`
@@ -260,10 +268,15 @@ export function App() {
             uiState={uiState}
             sourceImage={sourceImage}
             selectedProfile={selectedProfile}
+            outputMode={outputMode}
             advancedSettings={advancedSettings}
             isAdvancedOpen={isAdvancedOpen}
             hasUnappliedChanges={hasUnappliedChanges}
             onSelectProfile={handleSelectProfile}
+            onSelectOutputMode={(mode) => {
+              setOutputMode(mode);
+              if (uiState === 'completed') setHasUnappliedChanges(true);
+            }}
             onChangeSetting={handleChangeSetting}
             onToggleAdvanced={() => setIsAdvancedOpen((prev) => !prev)}
             onResetDefaults={handleResetDefaults}

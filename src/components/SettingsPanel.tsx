@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import type {
   AdvancedSettings,
+  ResultOutputMode,
   SourceImageInfo,
   VectorizerProfileId,
   VectorizerUIState,
@@ -25,10 +26,12 @@ interface SettingsPanelProps {
   uiState: VectorizerUIState;
   sourceImage: SourceImageInfo | null;
   selectedProfile: VectorizerProfileId;
+  outputMode: ResultOutputMode;
   advancedSettings: AdvancedSettings;
   isAdvancedOpen: boolean;
   hasUnappliedChanges: boolean;
   onSelectProfile: (profile: VectorizerProfileId) => void;
+  onSelectOutputMode: (mode: ResultOutputMode) => void;
   onChangeSetting: (key: keyof AdvancedSettings, value: number) => void;
   onToggleAdvanced: () => void;
   onResetDefaults: () => void;
@@ -46,10 +49,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   uiState,
   sourceImage,
   selectedProfile,
+  outputMode,
   advancedSettings,
   isAdvancedOpen,
   hasUnappliedChanges,
   onSelectProfile,
+  onSelectOutputMode,
   onChangeSetting,
   onToggleAdvanced,
   onResetDefaults,
@@ -147,6 +152,40 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
             )}
           </div>
         )}
+
+        <div>
+          <span className="text-xs font-medium text-zinc-300">Modo de resultado</span>
+          <div className="mt-2 grid grid-cols-1 gap-2">
+            <button
+              type="button"
+              data-testid="mode-editable-vector"
+              disabled={controlsDisabled}
+              onClick={() => onSelectOutputMode('editable_vector')}
+              className={`rounded-xl border px-3 py-2 text-left cursor-pointer disabled:opacity-50 ${
+                outputMode === 'editable_vector'
+                  ? 'border-indigo-500/60 bg-indigo-500/10'
+                  : 'border-zinc-800 bg-zinc-950/50'
+              }`}
+            >
+              <span className="block text-xs font-medium text-zinc-100">Vetor editável</span>
+              <span className="block text-[11px] text-zinc-400">Caminhos, formas e gradientes reais.</span>
+            </button>
+            <button
+              type="button"
+              data-testid="mode-max-fidelity"
+              disabled={controlsDisabled}
+              onClick={() => onSelectOutputMode('max_visual_fidelity')}
+              className={`rounded-xl border px-3 py-2 text-left cursor-pointer disabled:opacity-50 ${
+                outputMode === 'max_visual_fidelity'
+                  ? 'border-emerald-500/50 bg-emerald-500/10'
+                  : 'border-zinc-800 bg-zinc-950/50'
+              }`}
+            >
+              <span className="block text-xs font-medium text-zinc-100">Fidelidade visual máxima</span>
+              <span className="block text-[11px] text-zinc-400">Pode incluir a imagem original, identificada como raster.</span>
+            </button>
+          </div>
+        </div>
 
         {/* Perfis de Qualidade */}
         <div>

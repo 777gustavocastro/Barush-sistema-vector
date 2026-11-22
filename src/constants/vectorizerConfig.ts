@@ -37,12 +37,12 @@ export const VECTORIZER_PROFILES: ProfileDefinition[] = [
     description:
       'Prioriza preservação rigorosa de cores, contornos sutis, formas pequenas e transições cromáticas.',
     defaults: {
-      colorCount: 48,
-      detailPrecision: 94,
-      curveSmoothness: 52,
-      pathSimplification: 8,
-      noiseRemoval: 12,
-      contourSensitivity: 90,
+      colorCount: 256,
+      detailPrecision: 96,
+      curveSmoothness: 64,
+      pathSimplification: 0,
+      noiseRemoval: 0,
+      contourSensitivity: 88,
     },
   },
   {
@@ -72,7 +72,7 @@ export const ADVANCED_SETTINGS_META: AdvancedSettingMeta[] = [
     label: 'Quantidade de cores',
     description: 'Limite máximo de cores distintas preservadas na paleta vetorial.',
     min: 2,
-    max: 64,
+    max: 256,
     step: 1,
     unit: ' cores',
   },
@@ -127,6 +127,7 @@ export const PIPELINE_STAGES_ORDER = [
   { id: 'analyze' as const, label: 'Análise inteligente de cores, contraste e detalhes' },
   { id: 'preprocess' as const, label: 'Tratamento de transparência, escala e ruídos' },
   { id: 'trace' as const, label: 'Traçado geométrico de curvas e contornos vetoriais' },
+  { id: 'gradients_typography' as const, label: 'Gradientes nativos e tipografia de alta precisão' },
   { id: 'optimize' as const, label: 'Otimização fiel de estrutura com SVGO' },
   { id: 'validate' as const, label: 'Validação de caminhos editáveis e proporções' },
 ];

@@ -226,11 +226,38 @@ export function regularizeSubpixelChainPoints(
     y: Math.max(baseGridPoints[i].y - tubeRadiusPx, Math.min(baseGridPoints[i].y + tubeRadiusPx, p.y)),
   }));
 
-  const passes = 5;
+  const isPinnedMacroOrthogonalCorner = new Uint8Array(n);
+  if (n >= 9) {
+    const wrapIdx = (k: number): number => {
+      if (isClosedLoop) {
+        const period = n - 1;
+        return ((k % period) + period) % period;
+      }
+      return Math.max(0, Math.min(n - 1, k));
+    };
+    for (let i = 0; i < n; i++) {
+      if (!isClosedLoop && (i < 4 || i > n - 5)) continue;
+      const pB = baseGridPoints[wrapIdx(i - 4)];
+      const pC = baseGridPoints[i];
+      const pF = baseGridPoints[wrapIdx(i + 4)];
+      const inHoriz = pC.y === pB.y && Math.abs(pC.x - pB.x) === 4;
+      const inVert = pC.x === pB.x && Math.abs(pC.y - pB.y) === 4;
+      const outHoriz = pF.y === pC.y && Math.abs(pF.x - pC.x) === 4;
+      const outVert = pF.x === pC.x && Math.abs(pF.y - pC.y) === 4;
+      if ((inHoriz && outVert) || (inVert && outHoriz)) {
+        isPinnedMacroOrthogonalCorner[i] = 1;
+      }
+    }
+  }
+
+  // Em micro-laços fechados (estrelas, pontos tipográficos, reflexos oculares de 1–4px, n <= 17),
+  // limita a difusão para impedir o colapso de área por fluxo de curvatura!
+  const effectiveTube = isClosedLoop && n <= 17 ? Math.min(tubeRadiusPx, 0.22) : tubeRadiusPx;
+  const passes = isClosedLoop && n <= 17 ? 2 : 5;
   for (let pass = 0; pass < passes; pass++) {
     const next: Point2D[] = new Array(n);
     for (let i = 0; i < n; i++) {
-      if (!isClosedLoop && (i === 0 || i === n - 1)) {
+      if ((!isClosedLoop && (i === 0 || i === n - 1)) || isPinnedMacroOrthogonalCorner[i]) {
         next[i] = { ...curr[i] };
         continue;
       }
@@ -245,8 +272,8 @@ export function regularizeSubpixelChainPoints(
       const gx = baseGridPoints[i].x;
       const gy = baseGridPoints[i].y;
       next[i] = {
-        x: Math.max(gx - tubeRadiusPx, Math.min(gx + tubeRadiusPx, avgX)),
-        y: Math.max(gy - tubeRadiusPx, Math.min(gy + tubeRadiusPx, avgY)),
+        x: Math.max(gx - effectiveTube, Math.min(gx + effectiveTube, avgX)),
+        y: Math.max(gy - effectiveTube, Math.min(gy + effectiveTube, avgY)),
       };
     }
     if (isClosedLoop) {
@@ -780,8 +807,8 @@ export function fitAdaptiveBezierChain(
     return { start: p, end: p, commands: [] };
   }
 
-  // Teste de círculo/elipse analítica exata para laços fechados isolados (olhos, pontos, anéis, sombras elípticas!)
-  if (isClosedLoop && regPts.length >= 8) {
+  // Teste de círculo/elipse analítica exata para laços fechados isolados (olhos, estrelas de 1–4px, pontos, anéis, sombras!)
+  if (isClosedLoop && regPts.length >= 5) {
     const ellipseCommands = tryFitClosedAnalyticalEllipse(regPts, maxErr * 1.35);
     if (ellipseCommands) {
       return ellipseCommands;
@@ -909,7 +936,7 @@ function tryFitClosedAnalyticalEllipse(
   maxTolPx: number
 ): FittedBezierChain | null {
   const n = pts.length - 1;
-  if (n < 8) return null;
+  if (n < 4) return null;
 
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   let signedArea2 = 0;
@@ -925,14 +952,21 @@ function tryFitClosedAnalyticalEllipse(
 
   const cx = (minX + maxX) * 0.5;
   const cy = (minY + maxY) * 0.5;
-  const rx = (maxX - minX) * 0.5;
-  const ry = (maxY - minY) * 0.5;
-  if (rx < 0.85 || ry < 0.85) return null;
+  let rx = (maxX - minX) * 0.5;
+  let ry = (maxY - minY) * 0.5;
+  if (rx < 0.42 || ry < 0.42) return null;
 
   const polyArea = Math.abs(signedArea2) * 0.5;
-  const ellipseArea = Math.PI * rx * ry;
-  const ratio = polyArea / Math.max(0.5, ellipseArea);
-  if (ratio < 0.87 || ratio > 1.13) return null;
+  // Para micro-pontos/estrelas (n <= 12, diâmetro <= 3px), conserva a área fotométrica exata (π·rx·ry = polyArea)!
+  if (n <= 12 && rx <= 2.2 && ry <= 2.2 && Math.abs(rx - ry) <= 0.65) {
+    const areaScale = Math.sqrt(polyArea / Math.max(0.2, Math.PI * rx * ry));
+    rx *= Math.max(0.92, Math.min(1.22, areaScale));
+    ry *= Math.max(0.92, Math.min(1.22, areaScale));
+  } else {
+    const ellipseArea = Math.PI * rx * ry;
+    const ratio = polyArea / Math.max(0.5, ellipseArea);
+    if (ratio < 0.87 || ratio > 1.13) return null;
+  }
 
   // Verifica desvio radial máximo de todos os pontos do contorno até a elipse analítica
   const avgR = Math.sqrt(rx * ry);

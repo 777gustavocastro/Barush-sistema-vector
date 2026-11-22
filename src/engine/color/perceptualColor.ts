@@ -190,3 +190,230 @@ export function unmixPerceptualBoundaryCoverage(
   const orthogonalResidual = Math.hypot(pxL - projL, pxA - projA, pxB - projB);
   return { coverage, orthogonalResidual, chordLength };
 }
+
+/**
+ * Diferença perceptual internacional ISO/CIE 11664-6:2014 (CIEDE2000 / ΔE₀₀) a partir de coordenadas CIELAB.
+ */
+export function deltaECiede2000FromLab(
+  L1: number,
+  a1: number,
+  b1: number,
+  L2: number,
+  a2: number,
+  b2: number
+): number {
+  const avgL = (L1 + L2) * 0.5;
+  const C1 = Math.hypot(a1, b1);
+  const C2 = Math.hypot(a2, b2);
+  const avgC = (C1 + C2) * 0.5;
+
+  const avgC7 = Math.pow(avgC, 7);
+  const G = 0.5 * (1 - Math.sqrt(avgC7 / (avgC7 + 6103515625))); // 25^7 = 6103515625
+
+  const a1p = (1 + G) * a1;
+  const a2p = (1 + G) * a2;
+  const C1p = Math.hypot(a1p, b1);
+  const C2p = Math.hypot(a2p, b2);
+  const avgCp = (C1p + C2p) * 0.5;
+
+  const radToDeg = 180 / Math.PI;
+  const degToRad = Math.PI / 180;
+
+  let h1p = C1p < 1e-6 ? 0 : Math.atan2(b1, a1p) * radToDeg;
+  if (h1p < 0) h1p += 360;
+  let h2p = C2p < 1e-6 ? 0 : Math.atan2(b2, a2p) * radToDeg;
+  if (h2p < 0) h2p += 360;
+
+  const dLp = L2 - L1;
+  const dCp = C2p - C1p;
+
+  let dhp = 0;
+  if (C1p * C2p >= 1e-6) {
+    const diff = h2p - h1p;
+    if (Math.abs(diff) <= 180) {
+      dhp = diff;
+    } else if (diff > 180) {
+      dhp = diff - 360;
+    } else {
+      dhp = diff + 360;
+    }
+  }
+  const dHp = 2 * Math.sqrt(C1p * C2p) * Math.sin(dhp * 0.5 * degToRad);
+
+  let avgHp = h1p + h2p;
+  if (C1p * C2p < 1e-6) {
+    avgHp = h1p + h2p;
+  } else if (Math.abs(h1p - h2p) <= 180) {
+    avgHp = (h1p + h2p) * 0.5;
+  } else if (h1p + h2p < 360) {
+    avgHp = (h1p + h2p + 360) * 0.5;
+  } else {
+    avgHp = (h1p + h2p - 360) * 0.5;
+  }
+
+  const T =
+    1 -
+    0.17 * Math.cos((avgHp - 30) * degToRad) +
+    0.24 * Math.cos(2 * avgHp * degToRad) +
+    0.32 * Math.cos((3 * avgHp + 6) * degToRad) -
+    0.2 * Math.cos((4 * avgHp - 63) * degToRad);
+
+  const dTheta = 30 * Math.exp(-Math.pow((avgHp - 275) / 25, 2));
+  const avgCp7 = Math.pow(avgCp, 7);
+  const RC = 2 * Math.sqrt(avgCp7 / (avgCp7 + 6103515625));
+
+  const lDiffSq = (avgL - 50) * (avgL - 50);
+  const SL = 1 + (0.015 * lDiffSq) / Math.sqrt(20 + lDiffSq);
+  const SC = 1 + 0.045 * avgCp;
+  const SH = 1 + 0.015 * avgCp * T;
+  const RT = -Math.sin(2 * dTheta * degToRad) * RC;
+
+  const nL = dLp / SL;
+  const nC = dCp / SC;
+  const nH = dHp / SH;
+
+  return Math.sqrt(Math.max(0, nL * nL + nC * nC + nH * nH + RT * nC * nH));
+}
+
+export function deltaECiede2000Srgb8(
+  r1: number,
+  g1: number,
+  b1: number,
+  r2: number,
+  g2: number,
+  b2: number
+): number {
+  if (r1 === r2 && g1 === g2 && b1 === b2) return 0;
+  const [L1, a1, bl1] = srgb8ToCieLab(r1, g1, b1);
+  const [L2, a2, bl2] = srgb8ToCieLab(r2, g2, b2);
+  return deltaECiede2000FromLab(L1, a1, bl1, L2, a2, bl2);
+}
+
+/**
+ * Alpha Matting Dual-Space (Linear-RGB + sRGB + OKLab):
+ * Determina se um pixel observado `(rPx, gPx, bPx)` é uma mistura real de anti-aliasing entre
+ * `FG=(r1, g1, b1)` e `BG=(r2, g2, b2)` (mesmo quando cores complementares curvam no espaço OKLab),
+ * distinguindo-o rigorosamente de um contorno intencional escuro/claro ou de uma 3ª cor real!
+ */
+export function unmixDualSpaceBoundaryMatting(
+  rPx: number,
+  gPx: number,
+  bPx: number,
+  r1: number,
+  g1: number,
+  b1: number,
+  r2: number,
+  g2: number,
+  b2: number
+): {
+  isTrueAntialiasBlend: boolean;
+  coverageOfFirst: number;
+  blendResidualSrgb: number;
+} {
+  // 1) Espaço sRGB (usado por muitos motores 2D como Cairo, Canvas2D, Skia sRGB)
+  const vxS = r1 - r2;
+  const vyS = g1 - g2;
+  const vzS = b1 - b2;
+  const denomS = vxS * vxS + vyS * vyS + vzS * vzS;
+  if (denomS < 16) {
+    return { isTrueAntialiasBlend: true, coverageOfFirst: 0.5, blendResidualSrgb: 0 };
+  }
+
+  const rawTS = ((rPx - r2) * vxS + (gPx - g2) * vyS + (bPx - b2) * vzS) / denomS;
+  const clampedTS = Math.max(0, Math.min(1, rawTS));
+  const resSrgb = Math.hypot(
+    rPx - (r2 + clampedTS * vxS),
+    gPx - (g2 + clampedTS * vyS),
+    bPx - (b2 + clampedTS * vzS)
+  );
+
+  // 2) Espaço Linear-RGB (usado por renderizadores fisicamente corretos como Resvg, CoreGraphics, Blender)
+  const lrPx = SRGB_TO_LINEAR_LUT[rPx & 255];
+  const lgPx = SRGB_TO_LINEAR_LUT[gPx & 255];
+  const lbPx = SRGB_TO_LINEAR_LUT[bPx & 255];
+  const lr1 = SRGB_TO_LINEAR_LUT[r1 & 255];
+  const lg1 = SRGB_TO_LINEAR_LUT[g1 & 255];
+  const lb1 = SRGB_TO_LINEAR_LUT[b1 & 255];
+  const lr2 = SRGB_TO_LINEAR_LUT[r2 & 255];
+  const lg2 = SRGB_TO_LINEAR_LUT[g2 & 255];
+  const lb2 = SRGB_TO_LINEAR_LUT[b2 & 255];
+
+  const vxL = lr1 - lr2;
+  const vyL = lg1 - lg2;
+  const vzL = lb1 - lb2;
+  const denomL = vxL * vxL + vyL * vyL + vzL * vzL;
+
+  let clampedTL = clampedTS;
+  let resLinScaled = resSrgb;
+  let rawTL = rawTS;
+  if (denomL > 1e-5) {
+    rawTL = ((lrPx - lr2) * vxL + (lgPx - lg2) * vyL + (lbPx - lb2) * vzL) / denomL;
+    clampedTL = Math.max(0, Math.min(1, rawTL));
+    resLinScaled =
+      Math.hypot(
+        lrPx - (lr2 + clampedTL * vxL),
+        lgPx - (lg2 + clampedTL * vyL),
+        lbPx - (lb2 + clampedTL * vzL)
+      ) * 255;
+  }
+
+  const useLin = resLinScaled < resSrgb;
+  const bestResidual = useLin ? resLinScaled : resSrgb;
+  const bestRawT = useLin ? rawTL : rawTS;
+  const bestCov = useLin ? clampedTL : clampedTS;
+
+  // Para ser anti-aliasing genuíno (e NÃO um contorno preto/branco intencional):
+  // 1) A projeção não pode extrapolar além de [-0.08, 1.08] das duas cores vizinhas;
+  // 2) O desvio ortogonal ao segmento [C2, C1] deve ser baixo (<= 16/255 + 4% do comprimento da corda).
+  const chordSrgb = Math.sqrt(denomS);
+  const maxAllowedRes = Math.min(26, 13.5 + chordSrgb * 0.045);
+  const isTrueAntialiasBlend =
+    bestRawT >= -0.08 && bestRawT <= 1.08 && bestResidual <= maxAllowedRes;
+
+  return {
+    isTrueAntialiasBlend,
+    coverageOfFirst: bestCov,
+    blendResidualSrgb: bestResidual,
+  };
+}
+
+/**
+ * Decontaminação de Cor de Borda (Alpha Matting / Unpremultiply Local):
+ * Remove a contaminação cromática do fundo/vizinho `(rBg, gBg, bBg)` sobre um pixel de borda
+ * com cobertura estimada `alphaCov ∈ (0, 1]`, preservando a tonalidade real da região sem clarear/escurecer!
+ */
+export function decontaminateBoundaryPixelSrgb8(
+  rObs: number,
+  gObs: number,
+  bObs: number,
+  rBg: number,
+  gBg: number,
+  bBg: number,
+  alphaCov: number
+): [number, number, number] {
+  const a = Math.max(0.32, Math.min(1, alphaCov));
+  if (a >= 0.97) return [rObs, gObs, bObs];
+  const inv = 1 / a;
+  const oneMinusA = 1 - a;
+  return [
+    Math.max(0, Math.min(255, Math.round((rObs - oneMinusA * rBg) * inv))),
+    Math.max(0, Math.min(255, Math.round((gObs - oneMinusA * gBg) * inv))),
+    Math.max(0, Math.min(255, Math.round((bObs - oneMinusA * bBg) * inv))),
+  ];
+}
+
+export function hexToRgb8(hex: string): [number, number, number] {
+  const clean = hex.replace('#', '').trim();
+  if (clean.length === 3) {
+    return [
+      parseInt(clean[0] + clean[0], 16) || 0,
+      parseInt(clean[1] + clean[1], 16) || 0,
+      parseInt(clean[2] + clean[2], 16) || 0,
+    ];
+  }
+  return [
+    parseInt(clean.slice(0, 2), 16) || 0,
+    parseInt(clean.slice(2, 4), 16) || 0,
+    parseInt(clean.slice(4, 6), 16) || 0,
+  ];
+}

@@ -66,13 +66,24 @@ export function normalizeSvgForEditorsAndScaling(
     svg = svg.replace(/<\/svg>\s*$/i, `${extraOverlayXml}</svg>`);
   }
 
-  let pathIndex = 0;
+  const existingIds = new Set<string>();
+  const existingIdRegex = /\bid\s*=\s*["']([^"']+)["']/gi;
+  let idMatch: RegExpExecArray | null;
+  while ((idMatch = existingIdRegex.exec(svg)) !== null) {
+    existingIds.add(idMatch[1]);
+  }
+
+  let nextPathNumber = 1;
   svg = svg.replace(/<path\b([^>]*?)(\/?>)/gi, (full, attrs: string, closeTag: string) => {
-    pathIndex++;
     if (/\bid\s*=\s*["'][^"']+["']/i.test(attrs)) {
       return full;
     }
-    return `<path id="caminho-${pathIndex}"${attrs}${closeTag}`;
+    while (existingIds.has(`caminho-${nextPathNumber}`)) {
+      nextPathNumber++;
+    }
+    const assignedId = `caminho-${nextPathNumber++}`;
+    existingIds.add(assignedId);
+    return `<path id="${assignedId}"${attrs}${closeTag}`;
   });
 
   return `<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n${svg}`;

@@ -18,10 +18,15 @@ import {
 import type { AdaptiveCurveFitOptions } from '../geometry/adaptiveBezierFitter';
 import { buildExactTypographyInkMask } from '../typography/typographyProcessor';
 import type {
-  SceneObjectNode,
   SceneRegionNode,
+  Stage2InspectionReport,
   VectorReconstructionSceneGraph,
 } from '../stage2/reconstructionSceneGraph';
+import {
+  runStage2IterativeRefinement,
+  type EditableObjectSlot,
+  type EditableRegionSlot,
+} from '../stage2/stage2RefinementEngine';
 
 export interface ObjectVectorReconstructionOutput {
   svg: string;
@@ -30,19 +35,21 @@ export interface ObjectVectorReconstructionOutput {
   pathCount: number;
   clipPathCount: number;
   sceneGraph: VectorReconstructionSceneGraph;
+  stage2Report: Stage2InspectionReport;
 }
 
 /**
  * Subdivide de forma limpa e topologicamente contínua uma região com gradiente 2D não-linear
- * complexo ou textura controlada em 4..6 sub-faixas vetoriais confinadas por `<clipPath>`!
+ * complexo ou textura controlada em 4..7 sub-faixas vetoriais confinadas por `<clipPath>`!
  */
-function buildClippedSubdivisionForComplexRegion(
+export function buildClippedSubdivisionForComplexRegion(
   sub: SegmentedSubRegion,
   basePathD: string,
   baseUsesEvenOdd: boolean,
   decomposition: OpenCvImageDecomposition,
   curveOptions: AdaptiveCurveFitOptions,
-  idPrefix: string
+  idPrefix: string,
+  bandCountOverride?: number
 ): {
   clipDefsXml: string;
   gradDefsXml: string;
@@ -50,15 +57,18 @@ function buildClippedSubdivisionForComplexRegion(
   extraPaths: number;
   extraGradients: number;
 } | null {
-  const { width, substrateImage, oklab } = decomposition;
+  const { width, oklab } = decomposition;
+  const substrateImage = sub.isSoftShadow
+    ? decomposition.substrateImage
+    : decomposition.decontaminatedImage;
   const pad = 2;
   const cx0 = Math.max(0, sub.minX - pad);
   const cy0 = Math.max(0, sub.minY - pad);
   const cw = Math.min(decomposition.width - cx0, sub.maxX - sub.minX + 1 + pad * 2);
   const ch = Math.min(decomposition.height - cy0, sub.maxY - sub.minY + 1 + pad * 2);
-  if (cw < 6 || ch < 6 || sub.pixelCount < 140) return null;
+  if (cw < 6 || ch < 6 || sub.pixelCount < 115) return null;
 
-  const kBands = sub.pixelCount >= 900 ? 6 : 4;
+  const kBands = bandCountOverride ?? (sub.pixelCount >= 900 ? 6 : 4);
 
   // Ordena amostra por luminosidade + croma para inicializar sementes bem espaçadas
   const step = Math.max(1, Math.floor(sub.pixelCount / 300));
@@ -281,7 +291,7 @@ function buildClippedSubdivisionForComplexRegion(
 
   const clipId = `clip-${idPrefix}`;
   const clipEo = baseUsesEvenOdd ? ' clip-rule="evenodd"' : '';
-  const clipDefsXml = `<clipPath id="${clipId}"><path${clipEo} d="${basePathD}"/></clipPath>`;
+  const clipDefsXml = `<clipPath id="${clipId}"><path id="molde-${clipId}"${clipEo} d="${basePathD}"/></clipPath>`;
 
   return {
     clipDefsXml,
@@ -404,40 +414,30 @@ export async function reconstructImageAsEditableObjects(
         })
       : null;
 
-  const defsXmlParts: string[] = [];
-  const objectGroupsXml: string[] = [];
-  const sceneObjects: SceneObjectNode[] = [];
-
-  let gradientCounter = 0;
+  const regionSlots = new Map<number, EditableRegionSlot>();
+  const objectSlots: EditableObjectSlot[] = [];
   let pathCounter = 0;
-  let clipPathCounter = 0;
-  let totalHolesPreserved = 0;
-  let compoundOrSubdividedCount = 0;
 
   let backgroundHex: string | null = null;
   if (decomposition.hasUniformOpaqueBackground && decomposition.backgroundRgb) {
     const [br, bg, bb] = decomposition.backgroundRgb;
     backgroundHex = rgbToHex(br, bg, bb);
     pathCounter++;
-    objectGroupsXml.push(
-      `  <g id="objeto-plano-fundo" data-tipo="plano-de-fundo">` +
-        `<path id="caminho-${pathCounter}" fill="${backgroundHex}" d="M 0 0 L ${width} 0 L ${width} ${height} L 0 ${height} Z"/>` +
-      `</g>`
-    );
   }
 
   for (const obj of decomposition.objects) {
-    const childElementsXml: string[] = [];
-    const sceneRegions: SceneRegionNode[] = [];
+    const objRegionIds: number[] = [];
 
     for (let sIdx = 0; sIdx < obj.subRegions.length; sIdx++) {
       const sub = obj.subRegions[sIdx];
       const geom = regionTopology.geometriesByRegion.get(sub.id);
       if (!geom || !geom.pathD) continue;
 
-      totalHolesPreserved += geom.holeLoopCount;
-
       const gradId = `grad-obj-${obj.objectId}-${sIdx + 1}`;
+      const fillSourceImage = sub.isSoftShadow
+        ? decomposition.substrateImage
+        : decomposition.decontaminatedImage;
+
       const rawFit = fitRegionSvgFill(
         sub.pixels,
         sub.pixelCount,
@@ -445,7 +445,7 @@ export async function reconstructImageAsEditableObjects(
         sub.minY,
         sub.maxX,
         sub.maxY,
-        decomposition.substrateImage,
+        fillSourceImage,
         1,
         gradId,
         decomposition.rgbGradientMap,
@@ -469,43 +469,31 @@ export async function reconstructImageAsEditableObjects(
         };
       }
 
-      if (fit.defsXml) {
-        defsXmlParts.push(fit.defsXml);
-        gradientCounter++;
-      }
-      if (fit.overlayLayer?.defsXml) {
-        defsXmlParts.push(fit.overlayLayer.defsXml);
-        gradientCounter++;
-      }
-
-      const opAttr =
-        fit.fillOpacity !== undefined && fit.fillOpacity < 0.99
-          ? ` fill-opacity="${Number(fit.fillOpacity.toFixed(3))}"`
-          : '';
-      const evenOddAttr = geom.usesEvenOdd ? ' fill-rule="evenodd"' : '';
-
       pathCounter++;
       const mainPathId = `caminho-${pathCounter}`;
-      childElementsXml.push(
-        `<path id="${mainPathId}" data-natureza="${sub.nature}" fill="${fit.fillValue}"${opAttr}${evenOddAttr} d="${geom.pathD}"/>`
-      );
+      const evenOddAttr = geom.usesEvenOdd ? ' fill-rule="evenodd"' : '';
 
       let recordedFillKind: SceneRegionNode['fillKind'] = fit.kind;
+      let extraDefsXml = '';
+      let extraElementsXml = '';
+      let extraPathCount = 0;
+      let extraGradientCount = 0;
+      let extraClipCount = 0;
 
-      // Se possui camada composta sobreposta (iluminação ortogonal / brilho 2D), emite caminho gêmeo perfeitamente alinhado!
       if (fit.overlayLayer) {
         pathCounter++;
-        compoundOrSubdividedCount++;
-        childElementsXml.push(
-          `<path id="caminho-${pathCounter}" data-natureza="iluminacao-composta" fill="${fit.overlayLayer.fillValue}"${evenOddAttr} d="${geom.pathD}"/>`
-        );
+        recordedFillKind = 'compound';
+        extraDefsXml = fit.overlayLayer.defsXml ?? '';
+        extraElementsXml = `<path id="caminho-${pathCounter}" data-natureza="iluminacao-composta" fill="${fit.overlayLayer.fillValue}"${evenOddAttr} d="${geom.pathD}"/>`;
+        extraPathCount = 1;
+        extraGradientCount = fit.overlayLayer.defsXml ? 1 : 0;
       } else if (
         params.colorCount > 16 &&
+        !sub.isSemiTransparent &&
         fit.meanDeltaEOklab > 4.4 &&
         sub.pixelCount >= 180 &&
         (sub.nature === 'texture_detail' || sub.nature === 'gradient' || sub.nature === 'reflection_metallic')
       ) {
-        // Subdivisão vetorial confinada por <clipPath> quando o gradiente 2D é altamente não-linear!
         const subdiv = buildClippedSubdivisionForComplexRegion(
           sub,
           geom.pathD,
@@ -515,130 +503,97 @@ export async function reconstructImageAsEditableObjects(
           `sub-${obj.objectId}-${sIdx + 1}`
         );
         if (subdiv) {
-          defsXmlParts.push(subdiv.clipDefsXml);
-          if (subdiv.gradDefsXml) defsXmlParts.push(subdiv.gradDefsXml);
-          childElementsXml.push(subdiv.subGroupXml);
-          clipPathCounter++;
+          extraDefsXml = `${subdiv.clipDefsXml}${subdiv.gradDefsXml}`;
+          extraElementsXml = subdiv.subGroupXml;
+          extraClipCount = 1;
+          extraPathCount = subdiv.extraPaths;
+          extraGradientCount = subdiv.extraGradients;
           pathCounter += subdiv.extraPaths;
-          gradientCounter += subdiv.extraGradients;
-          compoundOrSubdividedCount++;
           recordedFillKind = 'subdivided';
         }
       }
 
-      sceneRegions.push({
+      regionSlots.set(sub.id, {
         regionId: sub.id,
         parentObjectId: obj.objectId,
         svgPathId: mainPathId,
-        nature: sub.nature,
-        pixelCount: sub.pixelCount,
-        boundingBox: {
-          minX: sub.minX,
-          minY: sub.minY,
-          maxX: sub.maxX,
-          maxY: sub.maxY,
-        },
+        sub,
+        pathD: geom.pathD,
+        usesEvenOdd: geom.usesEvenOdd,
+        holeLoopCount: geom.holeLoopCount,
         fillKind: recordedFillKind,
         fillValue: fit.fillValue,
         fillOpacity: fit.fillOpacity,
-        meanOklab: sub.meanOklab,
+        defsXml: fit.defsXml ?? '',
+        extraDefsXml,
+        extraElementsXml,
+        extraPathCount,
+        extraGradientCount,
+        extraClipCount,
         fitMeanDeltaEOklab: Number(fit.meanDeltaEOklab.toFixed(3)),
-        usesEvenOdd: geom.usesEvenOdd,
-        holeLoopCount: geom.holeLoopCount,
-        enclosedByRegionId: sub.enclosedByRegionId,
-        adjacentRegionIds: sub.adjacentRegionIds,
       });
+      objRegionIds.push(sub.id);
     }
 
-    if (childElementsXml.length > 0) {
-      let clipAttr = '';
+    if (objRegionIds.length > 0) {
       let objClipId: string | undefined;
+      let clipDefsXml = '';
 
-      // Aplica <clipPath> da silhueta exata em objetos compostos para impedir qualquer vazamento externo!
       if (obj.subRegions.length >= 2 && objectSilhouetteTopology) {
         const silGeom = objectSilhouetteTopology.geometriesByRegion.get(obj.objectId);
         if (silGeom && silGeom.pathD) {
           objClipId = `clip-objeto-${obj.objectId}`;
           const clipEo = silGeom.usesEvenOdd ? ' clip-rule="evenodd"' : '';
-          defsXmlParts.push(
-            `<clipPath id="${objClipId}"><path${clipEo} d="${silGeom.pathD}"/></clipPath>`
-          );
-          clipAttr = ` clip-path="url(#${objClipId})"`;
-          clipPathCounter++;
+          clipDefsXml = `<clipPath id="${objClipId}"><path${clipEo} d="${silGeom.pathD}"/></clipPath>`;
         }
       }
 
-      const svgGroupId = `objeto-${obj.objectId}`;
-      objectGroupsXml.push(
-        `  <g id="${svgGroupId}" data-nome="${obj.descriptiveName}" data-natureza="${obj.dominantNature}"${clipAttr}>` +
-          childElementsXml.join('') +
-        `</g>`
-      );
-
-      sceneObjects.push({
+      objectSlots.push({
         objectId: obj.objectId,
-        svgGroupId,
+        svgGroupId: `objeto-${obj.objectId}`,
         descriptiveName: obj.descriptiveName,
         dominantNature: obj.dominantNature,
-        boundingBox: {
-          minX: obj.minX,
-          minY: obj.minY,
-          maxX: obj.maxX,
-          maxY: obj.maxY,
-        },
-        totalPixelArea: obj.totalArea,
-        clipPathId: objClipId,
-        regions: sceneRegions,
+        minX: obj.minX,
+        minY: obj.minY,
+        maxX: obj.maxX,
+        maxY: obj.maxY,
+        totalArea: obj.totalArea,
+        clipId: objClipId,
+        clipDefsXml,
+        regionIds: objRegionIds,
+        rescuedDefsXml: [],
+        rescuedElementsXml: [],
       });
     }
   }
 
-  const finalDefs =
-    defsXmlParts.length > 0 || extraTypographyDefsXml
-      ? `  <defs>${defsXmlParts.join('')}${extraTypographyDefsXml}</defs>\n`
-      : '';
-
-  const finalSvg =
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">\n` +
-    finalDefs +
-    objectGroupsXml.join('\n') +
-    (extraTypographyGroupsXml ? `\n  ${extraTypographyGroupsXml}` : '') +
-    `\n</svg>`;
-
-  const typographyObjectIds = [
-    ...extraTypographyGroupsXml.matchAll(/<g\b[^>]*\bid="(objeto-[^"]+)"/gi),
-  ].map((m) => m[1]);
-
-  const totalObjects = objectGroupsXml.length + typographyObjectIds.length;
-
-  const sceneGraph: VectorReconstructionSceneGraph = {
-    width,
-    height,
-    hasUniformOpaqueBackground: decomposition.hasUniformOpaqueBackground,
+  // 3. Executa o Ciclo Automático Iterativo de Correção e Validação Supersampling (Etapa 2)!
+  const refined = await runStage2IterativeRefinement({
+    originalImage: image,
+    decomposition,
+    regionSlots,
+    objectSlots,
     backgroundHex,
-    objects: sceneObjects,
-    typographyObjectIds,
-    topologySummary: {
-      totalObjects,
-      totalRegions: sceneObjects.reduce((acc, o) => acc + o.regions.length, 0),
-      sharedCanonicalBoundaries: regionTopology.sharedCanonicalChainCount,
-      junctionVertices: regionTopology.junctionVertexCount,
-      clipPathsGenerated: clipPathCounter,
-      interiorHolesPreserved: totalHolesPreserved,
-      compoundOrSubdividedGradients: compoundOrSubdividedCount,
-      uncoveredForegroundPixels: 0,
-    },
-    svgMarkup: finalSvg,
-  };
+    extraTypographyDefsXml,
+    extraTypographyGroupsXml,
+    typographyBoxes,
+    sharedCanonicalBoundaries: regionTopology.sharedCanonicalChainCount,
+    junctionVertices: regionTopology.junctionVertexCount,
+    allowFullPalette: params.colorCount > 16,
+    baseCurveOptions: curveOptions,
+    subdivideComplexRegion: (sub, basePathD, baseUsesEvenOdd, cOpts, idPref, bandOverride) =>
+      buildClippedSubdivisionForComplexRegion(
+        sub,
+        basePathD,
+        baseUsesEvenOdd,
+        decomposition,
+        cOpts,
+        idPref,
+        bandOverride
+      ),
+  });
 
-  return {
-    svg: finalSvg,
-    objectCount: totalObjects,
-    gradientCount: gradientCounter,
-    pathCount: pathCounter,
-    clipPathCount: clipPathCounter,
-    sceneGraph,
-  };
+  return refined;
 }
 
 export function organizeVTracerPathsIntoObjects(

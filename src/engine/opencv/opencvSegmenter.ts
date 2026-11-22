@@ -1,8 +1,10 @@
 import type { DetectedImageCategory, RawRgbaImage } from '../types';
 import {
   computePerceptualOklabBuffers,
+  decontaminateBoundaryPixelSrgb8,
   deltaEOklab,
   srgb8ToOklabScaled,
+  unmixDualSpaceBoundaryMatting,
   unmixPerceptualBoundaryCoverage,
   type PerceptualOklabBuffers,
 } from '../color/perceptualColor';
@@ -115,6 +117,8 @@ export interface OpenCvImageDecomposition {
   backgroundRgb: [number, number, number] | null;
   backgroundOklab: [number, number, number] | null;
   substrateImage: RawRgbaImage;
+  decontaminatedImage: RawRgbaImage;
+  interiorMask: Uint8Array;
   oklab: PerceptualOklabBuffers;
   cannyEdgeMap: Uint8Array;
   rgbGradientMap: Uint8Array;
@@ -217,6 +221,20 @@ function detectUniformBorderBackground(image: RawRgbaImage): {
   bgRgb: [number, number, number] | null;
 } {
   const { width, height, data } = image;
+  const cornerAlphaOffsets = [
+    3,
+    (width - 1) * 4 + 3,
+    (height - 1) * width * 4 + 3,
+    ((height - 1) * width + (width - 1)) * 4 + 3,
+  ];
+  let transparentExtremeCorners = 0;
+  for (const aOff of cornerAlphaOffsets) {
+    if (data[aOff] < 40) transparentExtremeCorners++;
+  }
+  if (transparentExtremeCorners >= 2) {
+    return { hasUniformBg: false, bgRgb: null };
+  }
+
   const borderSamples: Array<[number, number, number, number]> = [];
   const stepX = Math.max(1, Math.floor(width / 56));
   const stepY = Math.max(1, Math.floor(height / 56));
@@ -656,6 +674,96 @@ export async function analyzeAndSegmentWithOpenCv(
       }
     }
 
+    // Congela a máscara de sementes puras do Passo A para impedir que o Passo B "rasteje" (creep)
+    // por cima de contornos finos internos usando pixels de franja recém-atribuídos como referência!
+    const isSeedCorePx = new Uint8Array(totalPixels);
+    const seedCoreRgbA = new Float32Array(nextRegionId * 4);
+    const seedCoreLab = new Float32Array(nextRegionId * 3);
+    const seedCoreCnt = new Int32Array(nextRegionId);
+    for (let px = 0; px < totalPixels; px++) {
+      const rId = regionIdMap[px];
+      if (rId > 0) {
+        isSeedCorePx[px] = 1;
+        const p4 = px * 4;
+        const b4 = rId * 4;
+        const b3 = rId * 3;
+        seedCoreRgbA[b4] += data[p4];
+        seedCoreRgbA[b4 + 1] += data[p4 + 1];
+        seedCoreRgbA[b4 + 2] += data[p4 + 2];
+        seedCoreRgbA[b4 + 3] += data[p4 + 3];
+        seedCoreLab[b3] += L[px];
+        seedCoreLab[b3 + 1] += a[px];
+        seedCoreLab[b3 + 2] += b[px];
+        seedCoreCnt[rId]++;
+      }
+    }
+    for (let rId = 1; rId < nextRegionId; rId++) {
+      const cnt = seedCoreCnt[rId];
+      if (cnt > 0) {
+        const inv = 1 / cnt;
+        seedCoreRgbA[rId * 4] *= inv;
+        seedCoreRgbA[rId * 4 + 1] *= inv;
+        seedCoreRgbA[rId * 4 + 2] *= inv;
+        seedCoreRgbA[rId * 4 + 3] *= inv;
+        seedCoreLab[rId * 3] *= inv;
+        seedCoreLab[rId * 3 + 1] *= inv;
+        seedCoreLab[rId * 3 + 2] *= inv;
+      }
+    }
+
+    const getPureAnchorForNeighbor = (
+      candReg: number,
+      nPx: number
+    ): { r: number; g: number; b: number; al: number; L: number; okA: number; okB: number } => {
+      if (isSeedCorePx[nPx]) {
+        const i4 = nPx * 4;
+        return {
+          r: data[i4],
+          g: data[i4 + 1],
+          b: data[i4 + 2],
+          al: data[i4 + 3],
+          L: L[nPx],
+          okA: a[nPx],
+          okB: b[nPx],
+        };
+      }
+      // Procura semente pura de candReg em vizinhança curta (preserva gradientes locais sem contaminar com franja!)
+      const nx0 = nPx % width;
+      const ny0 = (nPx - nx0) / width;
+      for (let dy = -2; dy <= 2; dy++) {
+        const yy = ny0 + dy;
+        if (yy < 0 || yy >= height) continue;
+        for (let dx = -2; dx <= 2; dx++) {
+          const xx = nx0 + dx;
+          if (xx < 0 || xx >= width) continue;
+          const sp = yy * width + xx;
+          if (regionIdMap[sp] === candReg && isSeedCorePx[sp]) {
+            const i4 = sp * 4;
+            return {
+              r: data[i4],
+              g: data[i4 + 1],
+              b: data[i4 + 2],
+              al: data[i4 + 3],
+              L: L[sp],
+              okA: a[sp],
+              okB: b[sp],
+            };
+          }
+        }
+      }
+      const b4 = candReg * 4;
+      const b3 = candReg * 3;
+      return {
+        r: Math.round(seedCoreRgbA[b4]),
+        g: Math.round(seedCoreRgbA[b4 + 1]),
+        b: Math.round(seedCoreRgbA[b4 + 2]),
+        al: Math.round(seedCoreRgbA[b4 + 3]),
+        L: seedCoreLab[b3],
+        okA: seedCoreLab[b3 + 1],
+        okB: seedCoreLab[b3 + 2],
+      };
+    };
+
     // Passo B: Desmistura Perceptual de Anti-Aliasing com Proteção Estrita de 3ª Cor!
     // - Se o pixel está sobre a corda linear [Reg1, Fundo] ou [Reg1, Reg2] (resíduo ortogonal pequeno),
     //   atribui à região correspondente sem criar farpas nem fendas.
@@ -695,7 +803,7 @@ export async function analyzeAndSegmentWithOpenCv(
           }
         }
 
-        // Coleta até 2 regiões vizinhas distintas mais próximas em OKLab
+        // Coleta até 2 regiões vizinhas distintas mais próximas em raio 2px, SEMPRE ancoradas na cor pura de semente!
         let reg1 = 0;
         let reg1Px = -1;
         let dist1 = Infinity;
@@ -703,17 +811,19 @@ export async function analyzeAndSegmentWithOpenCv(
         let reg2Px = -1;
         let dist2 = Infinity;
 
-        for (let dy = -1; dy <= 1; dy++) {
+        for (let dy = -2; dy <= 2; dy++) {
           const ny = y + dy;
           if (ny < 0 || ny >= height) continue;
-          for (let dx = -1; dx <= 1; dx++) {
+          for (let dx = -2; dx <= 2; dx++) {
             if (dx === 0 && dy === 0) continue;
             const nx = x + dx;
             if (nx < 0 || nx >= width) continue;
             const nPx = ny * width + nx;
             const candReg = regionIdMap[nPx];
             if (candReg <= 0 || ccLabels[nPx] !== objLabel) continue;
-            const d = deltaEOklab(pxL, pxA, pxB, L[nPx], a[nPx], b[nPx]);
+            const spatialBias = Math.abs(dx) <= 1 && Math.abs(dy) <= 1 ? 0 : 1.5;
+            const anchor = getPureAnchorForNeighbor(candReg, nPx);
+            const d = deltaEOklab(pxL, pxA, pxB, anchor.L, anchor.okA, anchor.okB) + spatialBias;
             if (candReg === reg1) {
               if (d < dist1) {
                 dist1 = d;
@@ -735,12 +845,16 @@ export async function analyzeAndSegmentWithOpenCv(
         }
 
         if (reg1 <= 0 || reg1Px < 0) continue;
+        const pIdx4 = px * 4;
+        const anchor1 = getPureAnchorForNeighbor(reg1, reg1Px);
 
-        // Caso 1: Borda externa contra fundo
+        // Caso 1: Borda externa contra fundo (Linear-RGB + sRGB + OKLab alpha matting + cobertura relativa de alfa)
         if (touchesExteriorBg) {
-          if (!hasUniformBg || !bgOklab) {
-            if (dist1 <= 14 || pxAlpha < 245) {
-              regionIdMap[px] = pxAlpha >= 122 ? reg1 : -1;
+          if (!hasUniformBg || !bgOklab || !bgRgb) {
+            const reg1Alpha = anchor1.al;
+            if (dist1 <= 15 || (pxAlpha < 64 && dist1 <= 28)) {
+              const halfAlphaThresh = Math.max(12, reg1Alpha * 0.48);
+              regionIdMap[px] = pxAlpha >= halfAlphaThresh ? reg1 : -1;
               changed++;
               continue;
             }
@@ -749,43 +863,73 @@ export async function analyzeAndSegmentWithOpenCv(
               pxL,
               pxA,
               pxB,
-              L[reg1Px],
-              a[reg1Px],
-              b[reg1Px],
+              anchor1.L,
+              anchor1.okA,
+              anchor1.okB,
               bgOklab[0],
               bgOklab[1],
               bgOklab[2]
             );
-            if (unmix.chordLength >= 2.2 && unmix.orthogonalResidual <= 6.2) {
-              regionIdMap[px] = unmix.coverage >= 0.48 ? reg1 : -1;
+            const dualBg = unmixDualSpaceBoundaryMatting(
+              data[pIdx4],
+              data[pIdx4 + 1],
+              data[pIdx4 + 2],
+              anchor1.r,
+              anchor1.g,
+              anchor1.b,
+              bgRgb[0],
+              bgRgb[1],
+              bgRgb[2]
+            );
+            if (
+              (unmix.chordLength >= 2.2 && unmix.orthogonalResidual <= 6.2) ||
+              dualBg.isTrueAntialiasBlend
+            ) {
+              const cov = dualBg.isTrueAntialiasBlend ? dualBg.coverageOfFirst : unmix.coverage;
+              regionIdMap[px] = cov >= 0.48 ? reg1 : -1;
               changed++;
               continue;
             }
           }
         }
 
-        // Caso 2: Costura interna entre duas regiões distintas Reg1 e Reg2
+        // Caso 2: Costura interna entre duas regiões distintas Reg1 e Reg2 (evita fitas fantasmas de antialiasing!)
         if (reg2 > 0 && reg2Px >= 0) {
+          const anchor2 = getPureAnchorForNeighbor(reg2, reg2Px);
           const seamUnmix = unmixPerceptualBoundaryCoverage(
             pxL,
             pxA,
             pxB,
-            L[reg1Px],
-            a[reg1Px],
-            b[reg1Px],
-            L[reg2Px],
-            a[reg2Px],
-            b[reg2Px]
+            anchor1.L,
+            anchor1.okA,
+            anchor1.okB,
+            anchor2.L,
+            anchor2.okA,
+            anchor2.okB
           );
-          if (seamUnmix.orthogonalResidual <= 6.5) {
-            regionIdMap[px] = seamUnmix.coverage >= 0.5 ? reg1 : reg2;
+          const dualSeam = unmixDualSpaceBoundaryMatting(
+            data[pIdx4],
+            data[pIdx4 + 1],
+            data[pIdx4 + 2],
+            anchor1.r,
+            anchor1.g,
+            anchor1.b,
+            anchor2.r,
+            anchor2.g,
+            anchor2.b
+          );
+          if (seamUnmix.orthogonalResidual <= 6.5 || dualSeam.isTrueAntialiasBlend) {
+            const cov = dualSeam.isTrueAntialiasBlend
+              ? dualSeam.coverageOfFirst
+              : seamUnmix.coverage;
+            regionIdMap[px] = cov >= 0.5 ? reg1 : reg2;
             changed++;
             continue;
           }
         }
 
-        // Caso 3: Pixel muito próximo perceptualmente da única região vizinha (continuação da borda)
-        if (dist1 <= 9.5) {
+        // Caso 3: Pixel muito próximo perceptualmente da cor pura da semente (nunca avança sobre traço escuro/claro!)
+        if (dist1 <= 6.8) {
           regionIdMap[px] = reg1;
           changed++;
         }
@@ -794,7 +938,18 @@ export async function analyzeAndSegmentWithOpenCv(
     }
 
     // Passo C: Agrupa todos os pixels restantes (contornos finos reais, pupilas, brilhos puntiformes, microdetalhes!)
-    for (let startPx = 0; startPx < totalPixels; startPx++) {
+    // Ordena sementes para iniciar SEMPRE na espinha central pura do traço fino (maior contraste local / extremo de L),
+    // evitando iniciar na franja cinza de antialiasing e estilhaçar contornos finos de 1.5–3px!
+    const unassignedCandidates: number[] = [];
+    for (let px = 0; px < totalPixels; px++) {
+      if (!isBackgroundPx[px] && regionIdMap[px] === 0 && ccLabels[px] > 0) {
+        unassignedCandidates.push(px);
+      }
+    }
+    unassignedCandidates.sort((p1, p2) => Math.abs(L[p2] - 52) - Math.abs(L[p1] - 52));
+
+    for (let cIdx = 0; cIdx < unassignedCandidates.length; cIdx++) {
+      const startPx = unassignedCandidates[cIdx];
       if (isBackgroundPx[startPx] || regionIdMap[startPx] !== 0) continue;
       const objLabel = ccLabels[startPx];
       if (objLabel <= 0) continue;
@@ -845,7 +1000,7 @@ export async function analyzeAndSegmentWithOpenCv(
               b[startPx]
             );
             const dStep = deltaEOklab(L[nPx], a[nPx], b[nPx], L[px], a[px], b[px]);
-            if (dSeed <= 18 && dStep <= 10) {
+            if (dSeed <= 29 && dStep <= 18) {
               regionIdMap[nPx] = fineRegId;
               bfsQueue[tail++] = nPx;
             }
@@ -863,6 +1018,139 @@ export async function analyzeAndSegmentWithOpenCv(
         const target = touchesBg && tail <= 4 && minAdjDeltaE >= 10 ? -1 : bestAdjReg;
         for (let i = 0; i < tail; i++) {
           regionIdMap[bfsQueue[i]] = target;
+        }
+      }
+    }
+
+    // Passo C.2: Dissolução Cirúrgica de Fitas Fantasmas / Halos de Antialiasing (Sandwich Blend Test)
+    // Identifica fitas de 1-2px sem núcleo interior que estão ensanduichadas entre duas regiões maiores (ou região + fundo)
+    // e cuja cor observada é combinação convexa real (Linear-RGB / sRGB) das duas vizinhas — preservando 100% contornos pretos/claros intencionais!
+    {
+      const tempBuckets = new Map<number, number[]>();
+      for (let px = 0; px < totalPixels; px++) {
+        const rid = regionIdMap[px];
+        if (rid <= 0) continue;
+        let list = tempBuckets.get(rid);
+        if (!list) {
+          list = [];
+          tempBuckets.set(rid, list);
+        }
+        list.push(px);
+      }
+
+      for (const [rid, pxs] of tempBuckets.entries()) {
+        if (pxs.length > 600) continue;
+
+        // Verifica se a região possui algum núcleo interior real (sobrevive a erosão 4-conexa de 1px)
+        let interiorCount = 0;
+        for (let i = 0; i < pxs.length; i++) {
+          const p = pxs[i];
+          const x = p % width;
+          const y = (p - x) / width;
+          if (
+            x > 0 &&
+            x + 1 < width &&
+            y > 0 &&
+            y + 1 < height &&
+            regionIdMap[p - 1] === rid &&
+            regionIdMap[p + 1] === rid &&
+            regionIdMap[p - width] === rid &&
+            regionIdMap[p + width] === rid
+          ) {
+            interiorCount++;
+            if (interiorCount > Math.max(2, pxs.length * 0.12)) break;
+          }
+        }
+        if (interiorCount > Math.max(2, pxs.length * 0.12)) continue;
+
+        let blendConfirmed = 0;
+        let sandwichedPixels = 0;
+        const targetAssignments = new Int32Array(pxs.length);
+
+        for (let i = 0; i < pxs.length; i++) {
+          const p = pxs[i];
+          const x = p % width;
+          const y = (p - x) / width;
+          const objLbl = ccLabels[p];
+          const p4 = p * 4;
+
+          let n1Reg = -999;
+          let n1Rgb: [number, number, number] | null = null;
+          let n2Reg = -999;
+          let n2Rgb: [number, number, number] | null = null;
+
+          for (let dy = -2; dy <= 2; dy++) {
+            const ny = y + dy;
+            if (ny < 0 || ny >= height) continue;
+            for (let dx = -2; dx <= 2; dx++) {
+              if (dx === 0 && dy === 0) continue;
+              const nx = x + dx;
+              if (nx < 0 || nx >= width) continue;
+              const np = ny * width + nx;
+              const nr = regionIdMap[np];
+              if (nr === rid) continue;
+
+              if (nr <= 0 || isBackgroundPx[np]) {
+                if (bgRgb) {
+                  if (n1Reg === -999) {
+                    n1Reg = -1;
+                    n1Rgb = bgRgb;
+                  } else if (n1Reg !== -1 && n2Reg === -999) {
+                    n2Reg = -1;
+                    n2Rgb = bgRgb;
+                  }
+                }
+                continue;
+              }
+
+              // Regiões vizinhas (> pxs.length, ou núcleos de micro-detalhes >= 2px quando o anel tem <= 24px) servem de parede do sanduíche
+              const nbLen = tempBuckets.get(nr)?.length ?? 0;
+              if (nbLen < 2 || (nbLen <= pxs.length && pxs.length > 24) || ccLabels[np] !== objLbl) continue;
+              const np4 = np * 4;
+              if (n1Reg === -999) {
+                n1Reg = nr;
+                n1Rgb = [data[np4], data[np4 + 1], data[np4 + 2]];
+              } else if (nr !== n1Reg && n2Reg === -999) {
+                n2Reg = nr;
+                n2Rgb = [data[np4], data[np4 + 1], data[np4 + 2]];
+              }
+            }
+          }
+
+          if (n1Reg !== -999 && n2Reg !== -999 && n1Rgb && n2Rgb) {
+            sandwichedPixels++;
+            const dual = unmixDualSpaceBoundaryMatting(
+              data[p4],
+              data[p4 + 1],
+              data[p4 + 2],
+              n1Rgb[0],
+              n1Rgb[1],
+              n1Rgb[2],
+              n2Rgb[0],
+              n2Rgb[1],
+              n2Rgb[2]
+            );
+            if (dual.isTrueAntialiasBlend) {
+              blendConfirmed++;
+              targetAssignments[i] = dual.coverageOfFirst >= 0.5 ? n1Reg : n2Reg;
+            } else {
+              targetAssignments[i] = n1Reg > 0 ? n1Reg : n2Reg;
+            }
+          } else if (n1Reg !== -999) {
+            targetAssignments[i] = n1Reg;
+          }
+        }
+
+        // Exige que >= 65% da fita esteja entre DUAS regiões distintas e seja mistura convexa comprovada!
+        if (
+          sandwichedPixels >= Math.ceil(pxs.length * 0.65) &&
+          blendConfirmed >= Math.ceil(sandwichedPixels * 0.68)
+        ) {
+          for (let i = 0; i < pxs.length; i++) {
+            if (targetAssignments[i] !== 0) {
+              regionIdMap[pxs[i]] = targetAssignments[i];
+            }
+          }
         }
       }
     }
@@ -976,6 +1264,97 @@ export async function analyzeAndSegmentWithOpenCv(
 
     const buckets = consolidateSmallOrExcessRegions();
 
+    // Calcula máscara de núcleo interior (1px erodido) e imagem decontaminada de borda (Alpha Matting)
+    const interiorMask = new Uint8Array(totalPixels);
+    const decontamData = new Uint8Array(data.length);
+    decontamData.set(data);
+
+    for (let px = 0; px < totalPixels; px++) {
+      const rid = regionIdMap[px];
+      if (rid <= 0) continue;
+      const x = px % width;
+      const y = (px - x) / width;
+      if (
+        x > 0 &&
+        x + 1 < width &&
+        y > 0 &&
+        y + 1 < height &&
+        regionIdMap[px - 1] === rid &&
+        regionIdMap[px + 1] === rid &&
+        regionIdMap[px - width] === rid &&
+        regionIdMap[px + width] === rid
+      ) {
+        interiorMask[px] = 1;
+      }
+    }
+
+    // Decontamina pixels de perímetro (1px) usando o núcleo interior mais próximo da própria região + vizinho externo
+    for (let px = 0; px < totalPixels; px++) {
+      const rid = regionIdMap[px];
+      if (rid <= 0 || interiorMask[px]) continue;
+      const x = px % width;
+      const y = (px - x) / width;
+
+      let innerPx = -1;
+      let outerRgb: [number, number, number] | null = null;
+      for (let dy = -2; dy <= 2; dy++) {
+        const ny = y + dy;
+        if (ny < 0 || ny >= height) continue;
+        for (let dx = -2; dx <= 2; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = x + dx;
+          if (nx < 0 || nx >= width) continue;
+          const np = ny * width + nx;
+          if (regionIdMap[np] === rid && interiorMask[np] && innerPx < 0) {
+            innerPx = np;
+          } else if (regionIdMap[np] !== rid && !outerRgb && Math.abs(dx) <= 1 && Math.abs(dy) <= 1) {
+            if (regionIdMap[np] <= 0 && bgRgb) {
+              outerRgb = bgRgb;
+            } else if (regionIdMap[np] > 0 && data[np * 4 + 3] >= 180) {
+              outerRgb = [data[np * 4], data[np * 4 + 1], data[np * 4 + 2]];
+            }
+          }
+        }
+      }
+
+      if (innerPx >= 0 && outerRgb && data[px * 4 + 3] >= 180) {
+        const p4 = px * 4;
+        const in4 = innerPx * 4;
+        const dual = unmixDualSpaceBoundaryMatting(
+          data[p4],
+          data[p4 + 1],
+          data[p4 + 2],
+          data[in4],
+          data[in4 + 1],
+          data[in4 + 2],
+          outerRgb[0],
+          outerRgb[1],
+          outerRgb[2]
+        );
+        if (dual.isTrueAntialiasBlend && dual.coverageOfFirst >= 0.35 && dual.coverageOfFirst < 0.96) {
+          const [dr, dg, db] = decontaminateBoundaryPixelSrgb8(
+            data[p4],
+            data[p4 + 1],
+            data[p4 + 2],
+            outerRgb[0],
+            outerRgb[1],
+            outerRgb[2],
+            dual.coverageOfFirst
+          );
+          decontamData[p4] = dr;
+          decontamData[p4 + 1] = dg;
+          decontamData[p4 + 2] = db;
+        }
+      }
+    }
+
+    const decontaminatedImage: RawRgbaImage = {
+      width,
+      height,
+      data: decontamData,
+      sourceFormat: substrateImage.sourceFormat,
+    };
+
     // Constrói metadados topológicos e perceptuais ricos por sub-região
     const subRegionsByObject = new Map<number, SegmentedSubRegion[]>();
     const allSubsById = new Map<number, SegmentedSubRegion>();
@@ -988,6 +1367,7 @@ export async function analyzeAndSegmentWithOpenCv(
       let minX = width, maxX = 0, minY = height, maxY = 0;
       let rSum = 0, gSum = 0, bSum = 0, aSum = 0;
       let lSum = 0, okASum = 0, okBSum = 0;
+      let intRSum = 0, intGSum = 0, intBSum = 0, intASum = 0, intCnt = 0;
       let minR = 255, maxR = 0, minG = 255, maxG = 0, minB = 255, maxB = 0;
       let perimeterTouchesBg = 0;
       let perimeterTotal = 0;
@@ -1002,9 +1382,9 @@ export async function analyzeAndSegmentWithOpenCv(
         const x = px % width;
         const y = (px - x) / width;
         const idx = px * 4;
-        const r = data[idx];
-        const g = data[idx + 1];
-        const bCh = data[idx + 2];
+        const r = decontamData[idx];
+        const g = decontamData[idx + 1];
+        const bCh = decontamData[idx + 2];
         const al = data[idx + 3];
 
         rSum += r;
@@ -1014,6 +1394,13 @@ export async function analyzeAndSegmentWithOpenCv(
         lSum += L[px];
         okASum += a[px];
         okBSum += b[px];
+        if (interiorMask[px]) {
+          intRSum += data[idx];
+          intGSum += data[idx + 1];
+          intBSum += data[idx + 2];
+          intASum += al;
+          intCnt++;
+        }
 
         if (x < minX) minX = x;
         if (x > maxX) maxX = x;
@@ -1075,13 +1462,102 @@ export async function analyzeAndSegmentWithOpenCv(
         avgPerimDeToBg <= 4.2 &&
         colorSpanRgb >= 10;
 
-      const { nature, deltaESpan, isMetallicOrSpecular } = classifyRegionVisualNature(
+      let { nature, deltaESpan, isMetallicOrSpecular } = classifyRegionVisualNature(
         typed,
         width,
         data,
         oklab,
         isSoftShadow
       );
+
+      let thinStrokeSpineRgb: [number, number, number] | null = null;
+      if (intCnt < Math.max(25, n * 0.42) && n >= 8 && !isSoftShadow && aSum / n >= 210) {
+        // Traço/contorno fino (espessura <= 2.6px): extrai os 25% pixels de espinha mais puros (maior distância às vizinhanças externas)
+        let surL = bgOklab ? bgOklab[0] : 50;
+        let surA = bgOklab ? bgOklab[1] : 0;
+        let surB = bgOklab ? bgOklab[2] : 0;
+        let surCnt = 0;
+        let surLSum = 0, surASum = 0, surBSum = 0;
+        const stepSur = Math.max(1, Math.floor(n / 120));
+        for (let i = 0; i < n; i += stepSur) {
+          const p = typed[i];
+          const x = p % width;
+          const y = (p - x) / width;
+          const nbCandidates = [
+            x > 0 ? p - 1 : -1,
+            x + 1 < width ? p + 1 : -1,
+            y > 0 ? p - width : -1,
+            y + 1 < height ? p + width : -1,
+          ];
+          for (const np of nbCandidates) {
+            if (np < 0 || regionIdMap[np] === rid) continue;
+            if (regionIdMap[np] <= 0 && bgOklab) {
+              surLSum += bgOklab[0];
+              surASum += bgOklab[1];
+              surBSum += bgOklab[2];
+              surCnt++;
+            } else if (regionIdMap[np] > 0) {
+              surLSum += L[np];
+              surASum += a[np];
+              surBSum += b[np];
+              surCnt++;
+            }
+          }
+        }
+        if (surCnt > 0) {
+          surL = surLSum / surCnt;
+          surA = surASum / surCnt;
+          surB = surBSum / surCnt;
+        }
+
+        const spineSamples: Array<{ px: number; contrast: number }> = [];
+        const stepSp = Math.max(1, Math.floor(n / 240));
+        for (let i = 0; i < n; i += stepSp) {
+          const p = typed[i];
+          spineSamples.push({
+            px: p,
+            contrast: deltaEOklab(L[p], a[p], b[p], surL, surA, surB),
+          });
+        }
+        spineSamples.sort((u, v) => v.contrast - u.contrast);
+        const topK = Math.max(3, Math.floor(spineSamples.length * 0.25));
+        let spR = 0, spG = 0, spB = 0, spMinL = 100, spMaxL = 0;
+        let spLSum = 0, spASum = 0, spBSum = 0;
+        for (let k = 0; k < topK; k++) {
+          const p = spineSamples[k].px;
+          const i4 = p * 4;
+          spR += data[i4];
+          spG += data[i4 + 1];
+          spB += data[i4 + 2];
+          spLSum += L[p];
+          spASum += a[p];
+          spBSum += b[p];
+          if (L[p] < spMinL) spMinL = L[p];
+          if (L[p] > spMaxL) spMaxL = L[p];
+        }
+        const spMeanL = spLSum / topK;
+        const spMeanA = spASum / topK;
+        const spMeanB = spBSum / topK;
+        let maxSpineDe = 0;
+        for (let k = 0; k < topK; k++) {
+          const p = spineSamples[k].px;
+          const de = deltaEOklab(L[p], a[p], b[p], spMeanL, spMeanA, spMeanB);
+          if (de > maxSpineDe) maxSpineDe = de;
+        }
+        if (maxSpineDe <= 8.5 && spMaxL - spMinL <= 12 && spineSamples[0].contrast >= 14) {
+          nature = 'uniform';
+          const pureR = Math.round(spR / topK);
+          const pureG = Math.round(spG / topK);
+          const pureB = Math.round(spB / topK);
+          thinStrokeSpineRgb = [pureR, pureG, pureB];
+          for (let i = 0; i < n; i++) {
+            const p4 = typed[i] * 4;
+            decontamData[p4] = pureR;
+            decontamData[p4 + 1] = pureG;
+            decontamData[p4 + 2] = pureB;
+          }
+        }
+      }
 
       // Identifica se a região é uma ilha 100% cercada por uma única região pai (ex.: pupila dentro da esclera!)
       let enclosedByRegionId = 0;
@@ -1103,6 +1579,28 @@ export async function analyzeAndSegmentWithOpenCv(
         }
       }
 
+      const finalMeanR = thinStrokeSpineRgb
+        ? thinStrokeSpineRgb[0]
+        : intCnt >= 6
+          ? intRSum / intCnt
+          : rSum / n;
+      const finalMeanG = thinStrokeSpineRgb
+        ? thinStrokeSpineRgb[1]
+        : intCnt >= 6
+          ? intGSum / intCnt
+          : gSum / n;
+      const finalMeanB = thinStrokeSpineRgb
+        ? thinStrokeSpineRgb[2]
+        : intCnt >= 6
+          ? intBSum / intCnt
+          : bSum / n;
+      const finalMeanA = intCnt >= 6 && !isSoftShadow ? intASum / intCnt : aSum / n;
+      const finalMeanOklab = srgb8ToOklabScaled(
+        Math.round(finalMeanR),
+        Math.round(finalMeanG),
+        Math.round(finalMeanB)
+      );
+
       const sub: SegmentedSubRegion = {
         id: rid,
         parentObjectId: objLabel,
@@ -1113,11 +1611,11 @@ export async function analyzeAndSegmentWithOpenCv(
         maxY,
         pixelCount: n,
         pixels: typed,
-        meanR: rSum / n,
-        meanG: gSum / n,
-        meanB: bSum / n,
-        meanA: aSum / n,
-        meanOklab: [lSum / n, okASum / n, okBSum / n],
+        meanR: finalMeanR,
+        meanG: finalMeanG,
+        meanB: finalMeanB,
+        meanA: finalMeanA,
+        meanOklab: finalMeanOklab,
         deltaESpan,
         colorSpanRgb,
         isSemiTransparent: aSum / n < 244 || nature === 'translucent' || isSoftShadow,
@@ -1243,6 +1741,8 @@ export async function analyzeAndSegmentWithOpenCv(
       backgroundRgb: bgRgb,
       backgroundOklab: bgOklab,
       substrateImage,
+      decontaminatedImage,
+      interiorMask,
       oklab,
       cannyEdgeMap,
       rgbGradientMap,

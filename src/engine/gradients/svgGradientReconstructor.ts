@@ -213,12 +213,41 @@ function formatStopsXml(stops: PerceptualGradientStop[]): string {
   return stops
     .map((s) => {
       const pct = Number((s.t * 100).toFixed(1));
-      const hex = rgbToHex(s.r, s.g, s.b);
+      const hex = rgbToHex(s.r, s.b !== undefined ? s.g : 0, s.b);
       const op = s.a / 255;
       const opAttr = op < 0.985 ? ` stop-opacity="${Number(op.toFixed(3))}"` : '';
       return `<stop offset="${pct}%" stop-color="${hex}"${opAttr}/>`;
     })
     .join('');
+}
+
+/**
+ * Equação analítica exata da especificação W3C SVG 1.1 / SVG 2 para <radialGradient cx cy r fx fy>:
+ * Dado centro C=(cx, cy), raio R e foco F=(fx, fy) com |F - C| < R (no espaço verticalmente escalado por invSy),
+ * retorna o parâmetro t(x, y) >= 0 tal que t(F) = 0 e t(P) = 1 em todo o círculo externo |(P - C)|_invSy = R.
+ */
+function computeW3cSvgRadialT(
+  x: number,
+  y: number,
+  cx: number,
+  cy: number,
+  r: number,
+  fx: number,
+  fy: number,
+  invSy: number
+): number {
+  const dx = x - fx;
+  const dy = (y - fy) * invSy;
+  const dFx = fx - cx;
+  const dFy = (fy - cy) * invSy;
+  const negC = r * r - (dFx * dFx + dFy * dFy);
+  if (negC <= 1e-6) {
+    return Math.hypot(dx, dy) / Math.max(1e-5, r);
+  }
+  const aQuad = dx * dx + dy * dy;
+  const bHalf = dFx * dx + dFy * dy;
+  const disc = Math.max(0, bHalf * bHalf + aQuad * negC);
+  return Math.max(0, (bHalf + Math.sqrt(disc)) / negC);
 }
 
 /**
@@ -610,16 +639,62 @@ export function fitRegionSvgFill(
     cy: number;
     fx: number;
     fy: number;
+    rOuter: number;
     scaleY: number;
   }
 
+  let minSampleL = 101;
+  for (let i = 0; i < actualSamples; i++) {
+    if (sampleL[i] < minSampleL) minSampleL = sampleL[i];
+  }
+  let darkWeightSum = 0;
+  let darkSumX = 0;
+  let darkSumY = 0;
+  for (let i = 0; i < actualSamples; i++) {
+    if (sampleL[i] <= minSampleL + 4.5) {
+      const w = 1 + (minSampleL + 4.5 - sampleL[i]);
+      darkWeightSum += w;
+      darkSumX += xs[i] * w;
+      darkSumY += ys[i] * w;
+    }
+  }
+  const peakDarkX = darkWeightSum > 0 ? darkSumX / darkWeightSum : meanX;
+  const peakDarkY = darkWeightSum > 0 ? darkSumY / darkWeightSum : meanY;
+
+  const makeRadialCandidate = (
+    cx: number,
+    cy: number,
+    rawFx: number,
+    rawFy: number,
+    scaleY: number
+  ): RadialCandidateConfig => {
+    const invSy = 1 / Math.max(0.05, scaleY);
+    let maxR = 1.5;
+    for (let i = 0; i < actualSamples; i++) {
+      const d = Math.hypot(xs[i] - cx, (ys[i] - cy) * invSy);
+      if (d > maxR) maxR = d;
+    }
+    const fDist = Math.hypot(rawFx - cx, (rawFy - cy) * invSy);
+    const clampScale = fDist > maxR * 0.84 ? (maxR * 0.84) / fDist : 1;
+    return {
+      cx,
+      cy,
+      fx: cx + (rawFx - cx) * clampScale,
+      fy: cy + (rawFy - cy) * clampScale,
+      rOuter: maxR,
+      scaleY,
+    };
+  };
+
   const radialCandidates: RadialCandidateConfig[] = [
-    { cx: cxGeom, cy: cyGeom, fx: cxGeom, fy: cyGeom, scaleY: 1 },
-    { cx: meanX, cy: meanY, fx: meanX, fy: meanY, scaleY: 1 },
-    { cx: cxGeom, cy: cyGeom, fx: cxGeom, fy: cyGeom, scaleY: aspectScaleY },
-    { cx: meanX, cy: meanY, fx: meanX, fy: meanY, scaleY: aspectScaleY },
-    // Candidato focal deslocado (iluminação 3D / esfera / gota / reflexo especular!)
-    { cx: cxGeom, cy: cyGeom, fx: peakLightX, fy: peakLightY, scaleY: 1 },
+    makeRadialCandidate(cxGeom, cyGeom, cxGeom, cyGeom, 1),
+    makeRadialCandidate(meanX, meanY, meanX, meanY, 1),
+    makeRadialCandidate(cxGeom, cyGeom, cxGeom, cyGeom, aspectScaleY),
+    makeRadialCandidate(meanX, meanY, meanX, meanY, aspectScaleY),
+    // Candidatos focais deslocados W3C (iluminação 3D / esfera / reflexo especular / sombra focal!)
+    makeRadialCandidate(cxGeom, cyGeom, peakLightX, peakLightY, 1),
+    makeRadialCandidate(cxGeom, cyGeom, peakLightX, peakLightY, aspectScaleY),
+    makeRadialCandidate(cxGeom, cyGeom, peakDarkX, peakDarkY, 1),
   ];
 
   let bestRadialCfg = radialCandidates[0];
@@ -634,9 +709,19 @@ export function fitRegionSvgFill(
 
   for (const cfg of radialCandidates) {
     const invSy = 1 / Math.max(0.05, cfg.scaleY);
-    // Projeta distância a partir do foco (fx, fy) escalado
+    // Projeta parâmetro exato W3C SVG <radialGradient cx cy r fx fy> escalado por rOuter
     for (let i = 0; i < actualSamples; i++) {
-      projBuf[i] = Math.hypot(xs[i] - cfg.fx, (ys[i] - cfg.fy) * invSy);
+      projBuf[i] =
+        computeW3cSvgRadialT(
+          xs[i],
+          ys[i],
+          cfg.cx,
+          cfg.cy,
+          cfg.rOuter,
+          cfg.fx,
+          cfg.fy,
+          invSy
+        ) * cfg.rOuter;
     }
     const fit = buildPerceptualStopsAndMeasureError(
       projBuf,
@@ -646,7 +731,7 @@ export function fitRegionSvgFill(
       sampleL,
       sampleOkA,
       sampleOkB,
-      Math.max(13, numBins - 2),
+      Math.max(15, numBins - 2),
       pruneTol
     );
     if (fit.meanDeltaE < bestRadial.meanDeltaE) {
@@ -655,7 +740,7 @@ export function fitRegionSvgFill(
     }
   }
 
-  const useRadial = bestRadial.meanDeltaE + 0.18 < bestLinear.meanDeltaE;
+  const useRadial = bestRadial.meanDeltaE + 0.12 < bestLinear.meanDeltaE;
   const bestGrad = useRadial ? bestRadial : bestLinear;
 
   if (bestGrad.stops.length < 2 || bestGrad.meanDeltaE + 0.25 >= solidMeanDe) {
@@ -674,19 +759,18 @@ export function fitRegionSvgFill(
   const stopTags = formatStopsXml(bestGrad.stops);
 
   if (useRadial) {
-    const { cx, cy, fx, fy, scaleY } = bestRadialCfg;
-    const rUnscaled = Math.max(1.5, bestRadial.maxProj);
+    const { cx, cy, fx, fy, rOuter, scaleY } = bestRadialCfg;
+    const rUnscaled = Math.max(1.5, bestRadial.maxProj, rOuter * 0.96);
     const rScaled = Number((rUnscaled * coordScaleFactor).toFixed(2));
     const cxScaled = Number((cx * coordScaleFactor).toFixed(2));
     const cyScaled = Number((cy * coordScaleFactor).toFixed(2));
 
-    // Restringe (fx, fy) a <= 0.85 * r dentro do círculo para 100% de compatibilidade SVG 1.1 no Illustrator e Inkscape!
     let focalAttr = '';
-    const fDist = Math.hypot(fx - cx, (fy - cy) / Math.max(0.05, scaleY));
+    const invSy = 1 / Math.max(0.05, scaleY);
+    const fDist = Math.hypot(fx - cx, (fy - cy) * invSy);
     if (fDist > 0.75) {
-      const clampScale = fDist > rUnscaled * 0.84 ? (rUnscaled * 0.84) / fDist : 1;
-      const fxClamped = Number(((cx + (fx - cx) * clampScale) * coordScaleFactor).toFixed(2));
-      const fyClamped = Number(((cy + (fy - cy) * clampScale) * coordScaleFactor).toFixed(2));
+      const fxClamped = Number((fx * coordScaleFactor).toFixed(2));
+      const fyClamped = Number((fy * coordScaleFactor).toFixed(2));
       focalAttr = ` fx="${fxClamped}" fy="${fyClamped}"`;
     }
 
@@ -696,9 +780,17 @@ export function fitRegionSvgFill(
         ? ` gradientTransform="translate(${cxScaled} ${cyScaled}) scale(1 ${syClean}) translate(${-cxScaled} ${-cyScaled})"`
         : '';
 
-    const defsXml = `<radialGradient id="${gradId}" gradientUnits="userSpaceOnUse" cx="${cxScaled}" cy="${cyScaled}" r="${rScaled}"${focalAttr}${transformAttr}>${stopTags}</radialGradient>`;
-    const range = Math.max(1e-5, bestRadial.maxProj - bestRadial.minProj);
-    const invSy = 1 / Math.max(0.05, scaleY);
+    // Renormaliza stops para [minProj..rUnscaled] -> [0..1] para alinhamento exato com rScaled!
+    const normStops: PerceptualGradientStop[] = bestRadial.stops.map((st) => {
+      const rawDist = bestRadial.minProj + st.t * (bestRadial.maxProj - bestRadial.minProj);
+      return {
+        ...st,
+        t: Math.max(0, Math.min(1, rawDist / rUnscaled)),
+      };
+    });
+    const radialStopTags = formatStopsXml(normStops);
+
+    const defsXml = `<radialGradient id="${gradId}" gradientUnits="userSpaceOnUse" cx="${cxScaled}" cy="${cyScaled}" r="${rScaled}"${focalAttr}${transformAttr}>${radialStopTags}</radialGradient>`;
 
     return {
       kind: 'radial',
@@ -708,8 +800,8 @@ export function fitRegionSvgFill(
       p95Error: bestRadial.p95Rgb,
       meanDeltaEOklab: bestRadial.meanDeltaE,
       evalColorAt: (x: number, y: number) => {
-        const d = Math.hypot(x - fx, (y - fy) * invSy);
-        const ev = evalStopsOklabAndRgba(bestRadial.stops, (d - bestRadial.minProj) / range);
+        const t = computeW3cSvgRadialT(x, y, cx, cy, rUnscaled, fx, fy, invSy);
+        const ev = evalStopsOklabAndRgba(normStops, t);
         return [ev.r, ev.g, ev.b, ev.a];
       },
     };

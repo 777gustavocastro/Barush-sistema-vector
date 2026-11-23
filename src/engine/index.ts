@@ -1,5 +1,6 @@
 export * from './types';
 export * from './color/perceptualColor';
+export * from './background/backgroundClassifier';
 export * from './geometry/adaptiveBezierFitter';
 export * from './geometry/subpixelEdgeLocalizer';
 export * from './geometry/contourInspector';

@@ -8,6 +8,11 @@ import {
   unmixPerceptualBoundaryCoverage,
   type PerceptualOklabBuffers,
 } from '../color/perceptualColor';
+import {
+  classifyCanvasBackground,
+  paintUniformBackgroundMask,
+  type BackgroundClassification,
+} from '../background/backgroundClassifier';
 
 interface OpenCvApi {
   Mat: new (rows?: number, cols?: number, type?: number) => CvMat;
@@ -114,6 +119,7 @@ export interface OpenCvImageDecomposition {
   width: number;
   height: number;
   hasUniformOpaqueBackground: boolean;
+  backgroundKind: BackgroundClassification['kind'];
   backgroundRgb: [number, number, number] | null;
   backgroundOklab: [number, number, number] | null;
   substrateImage: RawRgbaImage;
@@ -214,78 +220,6 @@ export function inpaintTypographyInkMask(
     data: out,
     sourceFormat: source.sourceFormat,
   };
-}
-
-function detectUniformBorderBackground(image: RawRgbaImage): {
-  hasUniformBg: boolean;
-  bgRgb: [number, number, number] | null;
-} {
-  const { width, height, data } = image;
-  const cornerAlphaOffsets = [
-    3,
-    (width - 1) * 4 + 3,
-    (height - 1) * width * 4 + 3,
-    ((height - 1) * width + (width - 1)) * 4 + 3,
-  ];
-  let transparentExtremeCorners = 0;
-  for (const aOff of cornerAlphaOffsets) {
-    if (data[aOff] < 40) transparentExtremeCorners++;
-  }
-  if (transparentExtremeCorners >= 2) {
-    return { hasUniformBg: false, bgRgb: null };
-  }
-
-  const borderSamples: Array<[number, number, number, number]> = [];
-  const stepX = Math.max(1, Math.floor(width / 56));
-  const stepY = Math.max(1, Math.floor(height / 56));
-
-  for (let x = 0; x < width; x += stepX) {
-    const topIdx = x * 4;
-    const botIdx = ((height - 1) * width + x) * 4;
-    borderSamples.push([data[topIdx], data[topIdx + 1], data[topIdx + 2], data[topIdx + 3]]);
-    borderSamples.push([data[botIdx], data[botIdx + 1], data[botIdx + 2], data[botIdx + 3]]);
-  }
-  for (let y = 0; y < height; y += stepY) {
-    const leftIdx = y * width * 4;
-    const rightIdx = (y * width + (width - 1)) * 4;
-    borderSamples.push([data[leftIdx], data[leftIdx + 1], data[leftIdx + 2], data[leftIdx + 3]]);
-    borderSamples.push([data[rightIdx], data[rightIdx + 1], data[rightIdx + 2], data[rightIdx + 3]]);
-  }
-
-  let transparentBorderCount = 0;
-  for (const s of borderSamples) {
-    if (s[3] < 40) transparentBorderCount++;
-  }
-  if (transparentBorderCount >= borderSamples.length * 0.35) {
-    return { hasUniformBg: false, bgRgb: null };
-  }
-
-  const opaqueSamples = borderSamples.filter((s) => s[3] >= 225);
-  if (opaqueSamples.length < borderSamples.length * 0.68) {
-    return { hasUniformBg: false, bgRgb: null };
-  }
-
-  const rs = opaqueSamples.map((s) => s[0]).sort((a, b) => a - b);
-  const gs = opaqueSamples.map((s) => s[1]).sort((a, b) => a - b);
-  const bs = opaqueSamples.map((s) => s[2]).sort((a, b) => a - b);
-  const mid = Math.floor(opaqueSamples.length / 2);
-  const medR = rs[mid];
-  const medG = gs[mid];
-  const medB = bs[mid];
-  const [medL, medA, medBv] = srgb8ToOklabScaled(medR, medG, medB);
-
-  let matching = 0;
-  for (const s of opaqueSamples) {
-    const [sL, sA, sB] = srgb8ToOklabScaled(s[0], s[1], s[2]);
-    if (deltaEOklab(sL, sA, sB, medL, medA, medBv) <= 3.2) {
-      matching++;
-    }
-  }
-
-  if (matching >= opaqueSamples.length * 0.78) {
-    return { hasUniformBg: true, bgRgb: [medR, medG, medB] };
-  }
-  return { hasUniformBg: false, bgRgb: null };
 }
 
 function classifyRegionVisualNature(
@@ -629,80 +563,13 @@ export async function analyzeAndSegmentWithOpenCv(
       }
     }
 
-    const { hasUniformBg, bgRgb } = detectUniformBorderBackground(substrateImage);
-    const bgOklab: [number, number, number] | null = bgRgb
-      ? srgb8ToOklabScaled(bgRgb[0], bgRgb[1], bgRgb[2])
-      : null;
+    const backgroundClass = classifyCanvasBackground(substrateImage, oklab);
+    const hasUniformBg = backgroundClass.hasUniformCanvas;
+    const bgRgb = backgroundClass.rgb;
+    const bgOklab = backgroundClass.oklab;
 
-    // 2. Flood-fill estrito do fundo externo em espaço perceptual OKLab (ΔE_ok <= 1.6 preserva sombras suaves!)
     const isBackgroundPx = new Uint8Array(totalPixels);
-    if (!hasUniformBg) {
-      for (let i = 0; i < totalPixels; i++) {
-        if (data[i * 4 + 3] < 12) {
-          isBackgroundPx[i] = 1;
-        }
-      }
-    } else if (bgRgb && bgOklab) {
-      const bgQueue = new Int32Array(totalPixels);
-      let bHead = 0;
-      let bTail = 0;
-
-      const bgDeTol = shouldBilateralClean ? 3.4 : 1.35;
-      const bgGradTol = shouldBilateralClean ? 5.2 : 2.2;
-      const bgManhattanTol = shouldBilateralClean ? 16 : 5;
-
-      const isPureBgColor = (px: number): boolean => {
-        const idx = px * 4;
-        if (data[idx + 3] < 12) return true;
-        const rgbManhattan =
-          Math.abs(data[idx] - bgRgb[0]) +
-          Math.abs(data[idx + 1] - bgRgb[1]) +
-          Math.abs(data[idx + 2] - bgRgb[2]);
-        if (rgbManhattan <= bgManhattanTol) return true;
-        const de = deltaEOklab(L[px], a[px], b[px], bgOklab[0], bgOklab[1], bgOklab[2]);
-        return de <= bgDeTol && oklabGrad1Map[px] <= bgGradTol;
-      };
-
-      const trySeed = (px: number) => {
-        if (isBackgroundPx[px]) return;
-        if (isPureBgColor(px)) {
-          isBackgroundPx[px] = 1;
-          bgQueue[bTail++] = px;
-        }
-      };
-
-      for (let x = 0; x < width; x++) {
-        trySeed(x);
-        trySeed((height - 1) * width + x);
-      }
-      for (let y = 0; y < height; y++) {
-        trySeed(y * width);
-        trySeed(y * width + (width - 1));
-      }
-
-      while (bHead < bTail) {
-        const px = bgQueue[bHead++];
-        const x = px % width;
-        const y = (px - x) / width;
-
-        if (x > 0 && !isBackgroundPx[px - 1] && isPureBgColor(px - 1)) {
-          isBackgroundPx[px - 1] = 1;
-          bgQueue[bTail++] = px - 1;
-        }
-        if (x + 1 < width && !isBackgroundPx[px + 1] && isPureBgColor(px + 1)) {
-          isBackgroundPx[px + 1] = 1;
-          bgQueue[bTail++] = px + 1;
-        }
-        if (y > 0 && !isBackgroundPx[px - width] && isPureBgColor(px - width)) {
-          isBackgroundPx[px - width] = 1;
-          bgQueue[bTail++] = px - width;
-        }
-        if (y + 1 < height && !isBackgroundPx[px + width] && isPureBgColor(px + width)) {
-          isBackgroundPx[px + width] = 1;
-          bgQueue[bTail++] = px + width;
-        }
-      }
-    }
+    paintUniformBackgroundMask(substrateImage, oklab, backgroundClass, isBackgroundPx);
 
     for (let i = 0; i < totalPixels; i++) {
       fgMaskMat.data[i] = isBackgroundPx[i] ? 0 : 255;
@@ -724,9 +591,10 @@ export async function analyzeAndSegmentWithOpenCv(
 
     // Barreira verdadeira de borda: exige curvatura de 2ª ordem (descontinuidade real) OU salto abrupto intenso!
     // Assim, degradês suaves (mesmo íngremes ou metálicos!) permanecem unidos em uma única região contínua!
-    const curvatureBarrier = (isPhoto ? 4.3 : 4.2) * detailScale;
-    const minGradForCurvature = (isPhoto ? 4.4 : 5.0) * detailScale;
-    const hardStepJump = (isPhoto ? 15.5 : 16.0) * detailScale;
+    const gradientCanvas = backgroundClass.kind === 'gradient';
+    const curvatureBarrier = (isPhoto ? 4.3 : gradientCanvas ? 6.4 : 4.2) * detailScale;
+    const minGradForCurvature = (isPhoto ? 4.4 : gradientCanvas ? 8.0 : 5.0) * detailScale;
+    const hardStepJump = (isPhoto ? 15.5 : gradientCanvas ? 22 : 16.0) * detailScale;
     const maxSmoothStepOk = (isPhoto ? 5.2 : 5.6) * detailScale;
 
     const isEdgeBarrier = new Uint8Array(totalPixels);
@@ -2171,6 +2039,7 @@ export async function analyzeAndSegmentWithOpenCv(
       width,
       height,
       hasUniformOpaqueBackground: hasUniformBg,
+      backgroundKind: backgroundClass.kind,
       backgroundRgb: bgRgb,
       backgroundOklab: bgOklab,
       substrateImage,

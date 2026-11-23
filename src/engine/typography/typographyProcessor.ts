@@ -1,5 +1,6 @@
 import type { RawRgbaImage, TypographyRegion } from '../types';
 import { traceMaskToFlatBezierPathData } from '../vectorizers/potraceEngine';
+import { refitPolygonalPath } from '../geometry/schneiderCurveFitter';
 import { upscaleRgbaCatmullRom } from '../image-processing/filters';
 import { fitRegionSvgFill } from '../gradients/svgGradientReconstructor';
 
@@ -471,6 +472,25 @@ interface IsolatedLetterBlob {
  * caminho vetorial editável (<path id="letra-L-K" d="..."/>) com super-amostragem 3× sub-pixel,
  * preservando kerning, espessura de haste, alinhamento, olhos internos (A, B, O, R, e) e acentos!
  */
+function glyphHasSerif(mask: Uint8Array, width: number, height: number): boolean {
+  if (height < 10 || width < 6) return false;
+  const rowCount = (y0: number, y1: number) => {
+    let cols = 0;
+    for (let x = 0; x < width; x++) {
+      for (let y = y0; y < y1; y++) {
+        if (mask[y * width + x]) {
+          cols++;
+          break;
+        }
+      }
+    }
+    return cols;
+  };
+  const mid = rowCount(Math.floor(height * 0.4), Math.floor(height * 0.6));
+  const foot = rowCount(Math.floor(height * 0.86), height);
+  return mid >= 1 && foot >= mid * 1.7;
+}
+
 export async function reconstructHighPrecisionTypographySvg(
   sourceImage: RawRgbaImage,
   regions: TypographyRegion[],
@@ -700,12 +720,13 @@ export async function reconstructHighPrecisionTypographySvg(
       }
 
       // Combina subpaths externos + olhos internos (ex: A, B, O, R, e) em um único <path> composto por letra!
-      const compoundD = dList.join(' ');
+      const compoundD = refitPolygonalPath(dList.join(' '));
       const subPathMoves = (compoundD.match(/M[\s\d.-]/g) ?? []).length;
       const evenOddAttr = subPathMoves > 1 ? ' fill-rule="evenodd"' : '';
+      const serif = glyphHasSerif(localMask, lw, lh);
       letterPathCount++;
       letterPathsXml.push(
-        `<path id="letra-${rIdx + 1}-${lIdx + 1}" fill="${fillAttr}"${evenOddAttr} d="${compoundD}"/>`
+        `<path id="letra-${rIdx + 1}-${lIdx + 1}" data-fonte="contorno-reconstruido" data-serifa="${serif ? 'presente' : 'ausente'}" fill="${fillAttr}"${evenOddAttr} d="${compoundD}"/>`
       );
     }
 
@@ -752,7 +773,7 @@ export async function reconstructHighPrecisionTypographySvg(
 
       const objId = `objeto-${startingObjectIndex + rIdx}`;
       groups.push(
-        `<g id="${objId}" data-tipo="tipografia-vetorial" data-letras="${letterPathsXml.length}" data-peso="${estimatedWeight}" data-inclinacao="${estimatedStyle}" data-espacamento-medio="${avgKerning}">${letterPathsXml.join('')}</g>`
+        `<g id="${objId}" data-tipo="tipografia-vetorial" data-fonte="contorno-reconstruido" data-letras="${letterPathsXml.length}" data-peso="${estimatedWeight}" data-inclinacao="${estimatedStyle}" data-espacamento-medio="${avgKerning}">${letterPathsXml.join('')}</g>`
       );
     }
   }

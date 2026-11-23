@@ -1,4 +1,5 @@
 import { computeExactEuclideanDistanceTransform } from '../stage2/stage2Diagnostics';
+import { fitSchneiderOpenCurve } from './schneiderCurveFitter';
 import {
   fitAdaptiveBezierChain,
   serializeChainsLoopToPathD,
@@ -542,15 +543,31 @@ function chainToPath(points: Point2D[], closed: boolean): string {
       commands.push(`L ${fmt(span[span.length - 1])}`);
       continue;
     }
-    const fitted = fitAdaptiveBezierChain(span, span, false, {
-      maxCurveErrorPx: 0.42,
-      straightLineTolPx: 0.55,
-      cornerAngleThresholdDeg: 68,
-      subpixelTubeRadiusPx: 0.16,
-      precision: 2,
-    });
-    if (fitted.commands.length === 0) continue;
-    const text = serializeChainsLoopToPathD([fitted], 2).replace(/ Z$/, '');
+    const a = span[0];
+    const b = span[span.length - 1];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    let sagitta = 0;
+    for (let i = 1; i < span.length - 1; i++) {
+      sagitta = Math.max(sagitta, Math.abs((span[i].x - a.x) * dy - (span[i].y - a.y) * dx) / len);
+    }
+    const text =
+      sagitta >= 1.2
+        ? fitSchneiderOpenCurve(span, { maxErrorPx: 0.4, precision: 3 })
+        : serializeChainsLoopToPathD(
+            [
+              fitAdaptiveBezierChain(span, span, false, {
+                maxCurveErrorPx: 0.42,
+                straightLineTolPx: 0.55,
+                cornerAngleThresholdDeg: 68,
+                subpixelTubeRadiusPx: 0.16,
+                precision: 2,
+              }),
+            ],
+            2
+          ).replace(/ Z$/, '');
+    if (!text) continue;
     if (commands.length === 0) commands.push(text);
     else commands.push(text.replace(/^M\s+[-\d.]+\s+[-\d.]+\s*/, ''));
   }

@@ -16,6 +16,7 @@ import {
   type RegionTopologyMetadata,
 } from '../topology/planarTopologyGraph';
 import { buildRegionRelationGraph } from '../topology/regionRelationGraph';
+import { restoreOccludedRectangles } from '../topology/occlusionCompletion';
 import { buildUniformContourStroke } from '../geometry/contourStrokeBuilder';
 import type { AdaptiveCurveFitOptions } from '../geometry/adaptiveBezierFitter';
 import { buildExactTypographyInkMask } from '../typography/typographyProcessor';
@@ -590,6 +591,8 @@ export async function reconstructImageAsEditableObjects(
       });
     }
   }
+
+  restoreOccludedRectangles(decomposition.regionIdMap, width, regionSlots, objectSlots);
 
   const refined = await runStage2IterativeRefinement({
     originalImage: image,

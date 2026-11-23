@@ -101,6 +101,96 @@ function pruneRedundantPerceptualStops(
   return kept;
 }
 
+function ensureLuminanceAnchorStops(
+  stops: PerceptualGradientStop[],
+  projValues: Float32Array,
+  sampleCount: number,
+  samplePixels: Int32Array,
+  data: Uint8Array,
+  sampleL: Float32Array,
+  sampleOkA: Float32Array,
+  sampleOkB: Float32Array,
+  minProj: number,
+  maxProj: number
+): PerceptualGradientStop[] {
+  if (stops.length < 2 || sampleCount < 8) return stops;
+  const range = Math.max(1e-5, maxProj - minProj);
+  let bright = 0;
+  let dark = 0;
+  for (let i = 1; i < sampleCount; i++) {
+    if (sampleL[i] > sampleL[bright]) bright = i;
+    if (sampleL[i] < sampleL[dark]) dark = i;
+  }
+  const out = stops.map((stop) => ({ ...stop }));
+  for (const index of [dark, bright]) {
+    const t = Math.max(0, Math.min(1, (projValues[index] - minProj) / range));
+    let nearest = out[0];
+    for (const stop of out) {
+      if (Math.abs(stop.t - t) < Math.abs(nearest.t - t)) nearest = stop;
+    }
+    if (Math.abs(nearest.L - sampleL[index]) < 8 && Math.abs(nearest.t - t) < 0.12) continue;
+    const [r, g, b] = oklabScaledToSrgb8(sampleL[index], sampleOkA[index], sampleOkB[index]);
+    out.push({
+      t,
+      L: sampleL[index],
+      okA: sampleOkA[index],
+      okB: sampleOkB[index],
+      r,
+      g,
+      b,
+      a: data[samplePixels[index] * 4 + 3],
+    });
+  }
+  out.sort((a, b) => a.t - b.t);
+  const compact: PerceptualGradientStop[] = [];
+  for (const stop of out) {
+    const prev = compact[compact.length - 1];
+    if (prev && Math.abs(prev.t - stop.t) < 0.035) {
+      if (Math.abs(stop.L - sampleL[bright]) < Math.abs(prev.L - sampleL[bright])) {
+        compact[compact.length - 1] = stop;
+      }
+      continue;
+    }
+    compact.push(stop);
+  }
+  if (compact.length >= 2) {
+    compact[0] = { ...compact[0], t: 0 };
+    compact[compact.length - 1] = { ...compact[compact.length - 1], t: 1 };
+  }
+  return compact;
+}
+
+export type SvgTransitionKind =
+  | 'solida'
+  | 'linear'
+  | 'radial'
+  | 'complexa'
+  | 'reflexo'
+  | 'sombra'
+  | 'brilho'
+  | 'transparencia'
+  | 'textura';
+
+export function classifySvgTransition(input: {
+  nature: RegionVisualNature;
+  fillKind: RegionSvgFillFit['kind'] | 'subdivided';
+  isSoftShadow: boolean;
+  isSemiTransparent: boolean;
+  focalHighlight: boolean;
+}): SvgTransitionKind {
+  if (input.isSoftShadow || input.nature === 'shadow') return 'sombra';
+  if (input.isSemiTransparent || input.nature === 'translucent') return 'transparencia';
+  if (input.nature === 'texture_detail' && (input.fillKind === 'solid' || input.fillKind === 'subdivided')) {
+    return 'textura';
+  }
+  if (input.fillKind === 'compound') return 'complexa';
+  if (input.nature === 'reflection_metallic' && input.fillKind === 'radial') return 'reflexo';
+  if (input.fillKind === 'radial' && input.focalHighlight) return 'brilho';
+  if (input.fillKind === 'radial') return 'radial';
+  if (input.fillKind === 'linear') return 'linear';
+  return 'solida';
+}
+
 function buildPerceptualStopsAndMeasureError(
   projValues: Float32Array,
   samplePixels: Int32Array,
@@ -740,7 +830,18 @@ export function fitRegionSvgFill(
     }
   }
 
-  const useRadial = bestRadial.meanDeltaE + 0.12 < bestLinear.meanDeltaE;
+  const highlightInside =
+    peakLightX > minX + rxBox * 0.18 &&
+    peakLightX < maxX - rxBox * 0.18 &&
+    peakLightY > minY + ryBox * 0.18 &&
+    peakLightY < maxY - ryBox * 0.18;
+  const useRadial =
+    bestRadial.meanDeltaE + 0.12 < bestLinear.meanDeltaE ||
+    (highlightInside &&
+      (regionNature === 'reflection_metallic' || regionNature === 'gradient') &&
+      bestRadial.meanDeltaE <= bestLinear.meanDeltaE + 1.15 &&
+      bestRadial.meanDeltaE <= 8 &&
+      bestRadial.stops.length >= 2);
   const bestGrad = useRadial ? bestRadial : bestLinear;
 
   if (bestGrad.stops.length < 2 || bestGrad.meanDeltaE + 0.25 >= solidMeanDe) {
@@ -756,7 +857,57 @@ export function fitRegionSvgFill(
     };
   }
 
-  const stopTags = formatStopsXml(bestGrad.stops);
+  if (regionNature === 'reflection_metallic') {
+    if (useRadial) {
+      const invSy = 1 / Math.max(0.05, bestRadialCfg.scaleY);
+      for (let i = 0; i < actualSamples; i++) {
+        projBuf[i] =
+          computeW3cSvgRadialT(
+            xs[i],
+            ys[i],
+            bestRadialCfg.cx,
+            bestRadialCfg.cy,
+            bestRadialCfg.rOuter,
+            bestRadialCfg.fx,
+            bestRadialCfg.fy,
+            invSy
+          ) * bestRadialCfg.rOuter;
+      }
+      bestRadial.stops = ensureLuminanceAnchorStops(
+        bestRadial.stops,
+        projBuf,
+        actualSamples,
+        samplePixels,
+        data,
+        sampleL,
+        sampleOkA,
+        sampleOkB,
+        bestRadial.minProj,
+        bestRadial.maxProj
+      );
+    } else {
+      const dx = Math.cos(bestAngleRad);
+      const dy = Math.sin(bestAngleRad);
+      for (let i = 0; i < actualSamples; i++) {
+        projBuf[i] = xs[i] * dx + ys[i] * dy;
+      }
+      bestLinear.stops = ensureLuminanceAnchorStops(
+        bestLinear.stops,
+        projBuf,
+        actualSamples,
+        samplePixels,
+        data,
+        sampleL,
+        sampleOkA,
+        sampleOkB,
+        bestLinear.minProj,
+        bestLinear.maxProj
+      );
+    }
+  }
+
+  const anchored = useRadial ? bestRadial : bestLinear;
+  const stopTags = formatStopsXml(anchored.stops);
 
   if (useRadial) {
     const { cx, cy, fx, fy, rOuter, scaleY } = bestRadialCfg;

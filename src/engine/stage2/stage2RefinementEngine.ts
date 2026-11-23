@@ -53,6 +53,7 @@ export interface EditableRegionSlot {
     linejoin: 'round' | 'miter' | 'bevel';
     miterlimit: number;
   };
+  transition?: string;
 }
 
 export interface EditableObjectSlot {
@@ -190,15 +191,15 @@ export function compileSlotsToSceneAndSvg(
           : '';
       const eoAttr = rSlot.usesEvenOdd ? ' fill-rule="evenodd"' : '';
       const stroke = rSlot.contourStroke;
-
+      const transitionAttr = rSlot.transition ? ` data-transicao="${rSlot.transition}"` : '';
       pathCount++;
       if (stroke) {
         childXml.push(
-          `<path id="${rSlot.svgPathId}" data-natureza="contorno" fill="none" stroke="${rSlot.fillValue}" stroke-width="${stroke.strokeWidth}" stroke-linecap="${stroke.linecap}" stroke-linejoin="${stroke.linejoin}" stroke-miterlimit="${stroke.miterlimit}"${opAttr} d="${stroke.d}"/>`
+          `<path id="${rSlot.svgPathId}" data-natureza="contorno"${transitionAttr} fill="none" stroke="${rSlot.fillValue}" stroke-width="${stroke.strokeWidth}" stroke-linecap="${stroke.linecap}" stroke-linejoin="${stroke.linejoin}" stroke-miterlimit="${stroke.miterlimit}"${opAttr} d="${stroke.d}"/>`
         );
       } else {
         childXml.push(
-          `<path id="${rSlot.svgPathId}" data-natureza="${rSlot.sub.nature}" fill="${rSlot.fillValue}"${opAttr}${eoAttr} d="${rSlot.pathD}"/>`
+          `<path id="${rSlot.svgPathId}" data-natureza="${rSlot.sub.nature}"${transitionAttr} fill="${rSlot.fillValue}"${opAttr}${eoAttr} d="${rSlot.pathD}"/>`
         );
       }
 

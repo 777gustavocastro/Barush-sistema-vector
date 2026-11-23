@@ -10,7 +10,7 @@ import {
   type SegmentedSubRegion,
 } from '../opencv/opencvSegmenter';
 import { rgbToHex } from '../color/perceptualColor';
-import { fitRegionSvgFill, type RegionSvgFillFit } from '../gradients/svgGradientReconstructor';
+import { fitRegionSvgFill, classifySvgTransition, type RegionSvgFillFit } from '../gradients/svgGradientReconstructor';
 import {
   buildPlanarSharedTopology,
   type RegionTopologyMetadata,
@@ -470,7 +470,15 @@ export async function reconstructImageAsEditableObjects(
       );
 
       let fit: RegionSvgFillFit = rawFit;
-      if (params.colorCount <= 16) {
+      const gradientExplains =
+        rawFit.kind !== 'solid' &&
+        rawFit.defsXml.length > 0 &&
+        rawFit.meanDeltaEOklab <=
+          (sub.nature === 'reflection_metallic' || sub.nature === 'gradient' || sub.nature === 'shadow'
+            ? 7.5
+            : 4.8);
+      const keepAsShadow = sub.isSoftShadow || sub.nature === 'shadow';
+      if (params.colorCount <= 16 && !gradientExplains && !keepAsShadow) {
         const levels = Math.max(2, Math.round(params.colorCount));
         const step = 255 / (levels - 1);
         const qr = Math.round(Math.round(sub.meanR / step) * step);
@@ -484,6 +492,8 @@ export async function reconstructImageAsEditableObjects(
           overlayLayer: undefined,
           evalColorAt: () => [qr, qg, qb, 255],
         };
+      } else if (keepAsShadow && fit.kind === 'solid' && sub.meanA < 250 && fit.fillOpacity === undefined) {
+        fit = { ...fit, fillOpacity: Math.max(0.08, Math.min(0.92, sub.meanA / 255)) };
       }
 
       pathCounter++;
@@ -491,6 +501,7 @@ export async function reconstructImageAsEditableObjects(
       const evenOddAttr = geom.usesEvenOdd ? ' fill-rule="evenodd"' : '';
       const contourStroke =
         fit.kind === 'solid' &&
+        !keepAsShadow &&
         !sub.isSemiTransparent &&
         sub.pixelCount <= 8000 &&
         sub.pixelCount / Math.max(1, Math.max(sub.maxX - sub.minX, sub.maxY - sub.minY)) <= 14
@@ -512,11 +523,12 @@ export async function reconstructImageAsEditableObjects(
         extraPathCount = 1;
         extraGradientCount = fit.overlayLayer.defsXml ? 1 : 0;
       } else if (
+        !gradientExplains &&
         params.colorCount > 16 &&
         !sub.isSemiTransparent &&
         fit.meanDeltaEOklab > 4.4 &&
         sub.pixelCount >= 180 &&
-        (sub.nature === 'texture_detail' || sub.nature === 'gradient' || sub.nature === 'reflection_metallic')
+        sub.nature === 'texture_detail'
       ) {
         const subdiv = buildClippedSubdivisionForComplexRegion(
           sub,
@@ -556,6 +568,13 @@ export async function reconstructImageAsEditableObjects(
         extraClipCount,
         fitMeanDeltaEOklab: Number(fit.meanDeltaEOklab.toFixed(3)),
         contourStroke,
+        transition: classifySvgTransition({
+          nature: sub.nature,
+          fillKind: recordedFillKind === 'subdivided' ? 'subdivided' : fit.kind,
+          isSoftShadow: sub.isSoftShadow,
+          isSemiTransparent: sub.isSemiTransparent,
+          focalHighlight: / fx=/.test(fit.defsXml),
+        }),
       });
       objRegionIds.push(sub.id);
     }

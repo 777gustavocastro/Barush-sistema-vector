@@ -269,6 +269,30 @@ function matchesBackground(
   return false;
 }
 
+function chebyshevToForeground(
+  px: number,
+  width: number,
+  height: number,
+  data: Uint8Array,
+  bg: [number, number, number],
+  tol: number
+): boolean {
+  const x = px % width;
+  const y = (px - x) / width;
+  const neighbors = [
+    x > 0 ? px - 1 : -1,
+    x + 1 < width ? px + 1 : -1,
+    y > 0 ? px - width : -1,
+    y + 1 < height ? px + width : -1,
+  ];
+  for (const nPx of neighbors) {
+    if (nPx < 0) continue;
+    const i = nPx * 4;
+    if (chebyshev(data[i], data[i + 1], data[i + 2], bg) > tol + 36) return true;
+  }
+  return false;
+}
+
 /**
  * Pinta a máscara de fundo (1 = fundo) com flood a partir da borda, furos da mesma cor
  * e absorção de manchas de compressão. Pixels de objeto (contraste acima da tolerância) ficam de fora.
@@ -321,22 +345,16 @@ export function paintUniformBackgroundMask(
     const px = queue[head++];
     const x = px % width;
     const y = (px - x) / width;
-    if (x > 0 && !isBackgroundPx[px - 1] && isBg(px - 1)) {
-      isBackgroundPx[px - 1] = 1;
-      queue[tail++] = px - 1;
-    }
-    if (x + 1 < width && !isBackgroundPx[px + 1] && isBg(px + 1)) {
-      isBackgroundPx[px + 1] = 1;
-      queue[tail++] = px + 1;
-    }
-    if (y > 0 && !isBackgroundPx[px - width] && isBg(px - width)) {
-      isBackgroundPx[px - width] = 1;
-      queue[tail++] = px - width;
-    }
-    if (y + 1 < height && !isBackgroundPx[px + width] && isBg(px + width)) {
-      isBackgroundPx[px + width] = 1;
-      queue[tail++] = px + width;
-    }
+    const stepTo = (nPx: number) => {
+      if (nPx < 0 || isBackgroundPx[nPx] || !isBg(nPx)) return;
+      if (chebyshevToForeground(nPx, width, height, data, bg, tol)) return;
+      isBackgroundPx[nPx] = 1;
+      queue[tail++] = nPx;
+    };
+    stepTo(x > 0 ? px - 1 : -1);
+    stepTo(x + 1 < width ? px + 1 : -1);
+    stepTo(y > 0 ? px - width : -1);
+    stepTo(y + 1 < height ? px + width : -1);
   }
 
   const seen = new Uint8Array(total);

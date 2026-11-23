@@ -288,9 +288,42 @@ export function detectTypographyRegions(image: RawRgbaImage): TypographyRegion[]
       const bgG = borderCount > 0 ? borderG / borderCount : 255;
       const bgB = borderCount > 0 ? borderB / borderCount : 255;
       const inkBgContrast = Math.hypot(inkR - bgR, inkG - bgG, inkB - bgB);
-      const cleanPerimeterRatio = borderCount > 0 ? borderCleanBgCount / borderCount : 1;
+      const cleanPerimeterRatio =
+        borderSamples.length > 0 && borderCount >= borderSamples.length * 0.65
+          ? borderCleanBgCount / borderCount
+          : 0;
 
-      // Rejeita caixas que contenham elementos internos de uma 3ª cor distinta (ex.: ícones coloridos dentro de molduras!)
+      // Rejeita letras com contorno oco ou contorno duplo (múltiplas transições por linha de varredura)
+      // para que o motor topológico planar reconstrua fielmente cada anel concêntrico (preenchimento + bordas)!
+      let scanRowCount = 0;
+      let totalInkRuns = 0;
+      const sampleStepY = Math.max(1, Math.floor(rh / 8));
+      for (let sy = y + 2; sy < y + rh - 2; sy += sampleStepY) {
+        let runsInRow = 0;
+        let inInk = false;
+        for (let sx = x; sx < x + rw; sx++) {
+          const pIdx = (sy * width + sx) * 4;
+          const isInkPx =
+            data[pIdx + 3] >= 120 &&
+            Math.hypot(data[pIdx] - inkR, data[pIdx + 1] - inkG, data[pIdx + 2] - inkB) <
+              Math.hypot(data[pIdx] - bgR, data[pIdx + 1] - bgG, data[pIdx + 2] - bgB) * 0.88;
+          if (isInkPx && !inInk) {
+            runsInRow++;
+            inInk = true;
+          } else if (!isInkPx) {
+            inInk = false;
+          }
+        }
+        if (runsInRow > 0) {
+          totalInkRuns += runsInRow;
+          scanRowCount++;
+        }
+      }
+      const avgRunsPerGlyphPerRow =
+        scanRowCount > 0 ? totalInkRuns / scanRowCount / Math.max(1, lineGroup.length) : 0;
+      const hasHollowOrDoubleOutline = avgRunsPerGlyphPerRow >= 2.45;
+
+      // Rejeita caixas que contenham elementos internos de uma 3ª cor distinta (ex.: letras contornadas multicoloridas ou ícones!)
       let thirdColorPixels = 0;
       let totalBoxSamples = 0;
       for (let by = y; by < y + rh; by += 2) {
@@ -311,14 +344,19 @@ export function detectTypographyRegions(image: RawRgbaImage): TypographyRegion[]
             Math.min(1, ((pr - bgR) * vx + (pg - bgG) * vy + (pb - bgB) * vz) / denom)
           );
           const ortho = Math.hypot(pr - (bgR + t * vx), pg - (bgG + t * vy), pb - (bgB + t * vz));
-          if (ortho > 68) {
+          if (ortho > 52) {
             thirdColorPixels++;
           }
         }
       }
       const thirdColorRatio = totalBoxSamples > 0 ? thirdColorPixels / totalBoxSamples : 0;
 
-      if (inkBgContrast >= 60 && cleanPerimeterRatio >= 0.72 && thirdColorRatio < 0.035) {
+      if (
+        inkBgContrast >= 60 &&
+        cleanPerimeterRatio >= 0.72 &&
+        thirdColorRatio < 0.025 &&
+        !hasHollowOrDoubleOutline
+      ) {
         regions.push({
           id: `tipografia-${regions.length + 1}`,
           x,

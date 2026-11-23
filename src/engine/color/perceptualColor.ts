@@ -316,7 +316,12 @@ export function unmixDualSpaceBoundaryMatting(
   const vzS = b1 - b2;
   const denomS = vxS * vxS + vyS * vyS + vzS * vzS;
   if (denomS < 16) {
-    return { isTrueAntialiasBlend: true, coverageOfFirst: 0.5, blendResidualSrgb: 0 };
+    const distToAnchor = Math.hypot(rPx - r1, gPx - g1, bPx - b1);
+    return {
+      isTrueAntialiasBlend: distToAnchor <= 10.5,
+      coverageOfFirst: 0.5,
+      blendResidualSrgb: distToAnchor,
+    };
   }
 
   const rawTS = ((rPx - r2) * vxS + (gPx - g2) * vyS + (bPx - b2) * vzS) / denomS;

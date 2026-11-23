@@ -31,3 +31,4 @@ export * from './worker/vectorizerClient';
 export * from './gradients/svgGradientReconstructor';
 export * from './typography/typographyProcessor';
 export * from './quality/qualityEvaluator';
+export * from './quality/universalQualityGate';

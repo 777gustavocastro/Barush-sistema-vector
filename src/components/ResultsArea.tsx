@@ -564,6 +564,43 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
             )}
           </div>
 
+          {vectorResult.qualityGate && (
+            <div className="rounded-lg border border-zinc-800/90 bg-zinc-950/75 px-3 py-2 text-[11px] space-y-1.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="font-semibold text-indigo-300">Controle de qualidade</span>
+                <span
+                  data-testid="quality-gate-status"
+                  className={
+                    vectorResult.qualityGate.approved
+                      ? 'font-mono text-emerald-300'
+                      : 'font-mono text-amber-300'
+                  }
+                >
+                  {vectorResult.qualityGate.approved ? 'Aprovado' : 'Revisão'} · confiança{' '}
+                  {vectorResult.qualityGate.confidence}
+                </span>
+              </div>
+              <p className="text-zinc-300">{vectorResult.qualityGate.summary}</p>
+              <ul className="grid gap-1 text-zinc-400 sm:grid-cols-2">
+                <li>1. Visual: {vectorResult.qualityGate.visualFidelity.verdict}</li>
+                <li>2. Geometria: {vectorResult.qualityGate.geometricFidelity.verdict}</li>
+                <li>3. Fundo: {vectorResult.qualityGate.backgroundIntegrity.verdict}</li>
+                <li>4. Preservado: {vectorResult.qualityGate.preservedDetails.join(' ') || '—'}</li>
+                <li>5. Perdido: {vectorResult.qualityGate.lostRegions.join(' ') || 'nenhuma região'}</li>
+                <li>6. Extra: {vectorResult.qualityGate.extraRegions.join(' ') || 'nenhuma região'}</li>
+                <li>7. Contornos: {vectorResult.qualityGate.contourQuality.verdict}</li>
+                <li>8. Gradientes: {vectorResult.qualityGate.gradientQuality.verdict}</li>
+                <li>9. Zoom: {vectorResult.qualityGate.zoom.verdict}</li>
+                <li>10. Edição: {vectorResult.qualityGate.editability.verdict}</li>
+              </ul>
+              {vectorResult.qualityGate.reviewNotes.length > 0 && (
+                <p className="text-amber-200/90">
+                  Revisão: {vectorResult.qualityGate.reviewNotes.slice(0, 3).join(' ')}
+                </p>
+              )}
+            </div>
+          )}
+
           {/* Barra de Diagnóstico Científico A vs B vs C e Explicação de Métricas Reais (Prompt 02 Seções 10, 11 e 14) */}
           {vectorResult.qualityReport && (
             <div className="rounded-lg border border-zinc-800/90 bg-zinc-950/75 px-3 py-2 text-[11px] space-y-2">

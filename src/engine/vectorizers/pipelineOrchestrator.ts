@@ -23,6 +23,7 @@ import {
 } from '../optimization/svgoOptimizer';
 import { inspectAndSanitizeSvgContours } from '../geometry/contourInspector';
 import { validateSvgStructure } from '../validation/fileValidator';
+import { buildUniversalVectorizationReport } from '../quality/universalQualityGate';
 import { reconstructNativeSvgGradients } from '../gradients/svgGradientReconstructor';
 import {
   buildExactTypographyInkMask,
@@ -528,16 +529,29 @@ export async function runVectorizationOnRgbaInternal(
     throw new Error(`Falha na validação vetorial estrita: ${validation.errors.join(' ')}`);
   }
 
+  const qualityGate = await buildUniversalVectorizationReport({
+    svg: finalSvg,
+    original: sourceImage,
+    quality: winnerQuality,
+    validation,
+    category: colorAnalysis.detectedCategory,
+    reviewDefects: stage2Report?.defects?.map((defect) => defect.description) ?? [],
+  });
+
   const residualNoiseHigh =
     colorAnalysis.noiseLevel >= 9.5 ||
     (winnerQuality?.p95DeltaE2000 !== undefined && winnerQuality.p95DeltaE2000 >= 7.5);
 
-  const technicalLimitationsNote =
+  const technicalLimitationsNote = [
     colorAnalysis.detectedCategory === 'photograph'
       ? 'Fotografia contínua reconstruída por aproximação vetorial em camadas editáveis (zero pixels raster). Microtexturas estocásticas de sensor/JPEG são representadas por regiões geométricas e gradientes aproximados em vez de fragmentos artificiais.'
       : residualNoiseHigh
         ? 'A imagem contém microvariações estocásticas ou compressão com perdas que não possuem equivalente analítico exato em curvas Bézier; o motor priorizou geometria limpa sem criar fragmentos artificiais de ruído.'
-        : undefined;
+        : undefined,
+    qualityGate.approved ? undefined : qualityGate.summary,
+  ]
+    .filter(Boolean)
+    .join(' ') || undefined;
 
   onProgress?.({
     stageId: 'validate',
@@ -557,6 +571,7 @@ export async function runVectorizationOnRgbaInternal(
     optimization,
     validation,
     qualityReport: winnerQuality,
+    qualityGate,
     sceneGraph: primarySceneGraph,
     stage2Report,
     reconstructedGradientCount: validation.gradientCount,

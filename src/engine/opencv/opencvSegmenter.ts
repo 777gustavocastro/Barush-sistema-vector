@@ -13,6 +13,7 @@ import {
   paintUniformBackgroundMask,
   type BackgroundClassification,
 } from '../background/backgroundClassifier';
+import { cleanContextualSegmentationNoise } from '../noise/contextualNoiseCleaner';
 
 interface OpenCvApi {
   Mat: new (rows?: number, cols?: number, type?: number) => CvMat;
@@ -133,6 +134,7 @@ export interface OpenCvImageDecomposition {
   objectLabelMap: Int32Array;
   objects: SegmentedVisualObject[];
   totalSubRegions: number;
+  noiseCleanup?: import('../noise/contextualNoiseCleaner').NoiseCleanupReport;
 }
 
 /**
@@ -437,6 +439,20 @@ export async function analyzeAndSegmentWithOpenCv(
         const cr = srcBuf[c4];
         const cg = srcBuf[c4 + 1];
         const cb = srcBuf[c4 + 2];
+        let edge = false;
+        for (let dy = -1; dy <= 1 && !edge; dy++) {
+          const nRow = (y + dy) * width;
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const n4 = (nRow + x + dx) * 4;
+            const l1 =
+              Math.abs(srcBuf[n4] - cr) +
+              Math.abs(srcBuf[n4 + 1] - cg) +
+              Math.abs(srcBuf[n4 + 2] - cb);
+            if (l1 > 52) edge = true;
+          }
+        }
+        if (edge) continue;
 
         let rAcc = cr * 4;
         let gAcc = cg * 4;
@@ -1464,6 +1480,18 @@ export async function analyzeAndSegmentWithOpenCv(
     );
     const maxTargetRegions = opts.maxTargetRegions ?? (isPhoto ? 460 : 520);
 
+    const noiseReport = cleanContextualSegmentationNoise({
+      width,
+      height,
+      data,
+      L,
+      a,
+      b,
+      regionIdMap,
+      backgroundRgb: bgRgb,
+    });
+    const protectedRegionIds = new Set(noiseReport.protectedRegionIds);
+
     const consolidateSmallOrExcessRegions = () => {
       const regPixels = new Map<number, number[]>();
       for (let px = 0; px < totalPixels; px++) {
@@ -1502,7 +1530,7 @@ export async function analyzeAndSegmentWithOpenCv(
       let currentCount = regPixels.size;
       for (const rid of sortedRids) {
         const pxs = regPixels.get(rid);
-        if (!pxs || pxs.length === 0) continue;
+        if (!pxs || pxs.length === 0 || protectedRegionIds.has(rid)) continue;
 
         const mustReduceForBudget = currentCount > maxTargetRegions && pxs.length <= 90;
         const isBelowNoiseFloor = noiseFloorPx > 0 && pxs.length <= noiseFloorPx;
@@ -2053,6 +2081,7 @@ export async function analyzeAndSegmentWithOpenCv(
       objectLabelMap,
       objects,
       totalSubRegions,
+      noiseCleanup: noiseReport,
     };
   } finally {
     srcMat.delete();

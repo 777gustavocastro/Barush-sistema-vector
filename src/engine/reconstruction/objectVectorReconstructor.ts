@@ -16,6 +16,7 @@ import {
   type RegionTopologyMetadata,
 } from '../topology/planarTopologyGraph';
 import { buildRegionRelationGraph } from '../topology/regionRelationGraph';
+import { buildUniformContourStroke } from '../geometry/contourStrokeBuilder';
 import type { AdaptiveCurveFitOptions } from '../geometry/adaptiveBezierFitter';
 import { buildExactTypographyInkMask } from '../typography/typographyProcessor';
 import type {
@@ -487,6 +488,13 @@ export async function reconstructImageAsEditableObjects(
       pathCounter++;
       const mainPathId = `caminho-${pathCounter}`;
       const evenOddAttr = geom.usesEvenOdd ? ' fill-rule="evenodd"' : '';
+      const contourStroke =
+        fit.kind === 'solid' &&
+        !sub.isSemiTransparent &&
+        sub.pixelCount <= 8000 &&
+        sub.pixelCount / Math.max(1, Math.max(sub.maxX - sub.minX, sub.maxY - sub.minY)) <= 14
+          ? buildUniformContourStroke(decomposition.regionIdMap, sub.id, width, height) ?? undefined
+          : undefined;
 
       let recordedFillKind: SceneRegionNode['fillKind'] = fit.kind;
       let extraDefsXml = '';
@@ -546,6 +554,7 @@ export async function reconstructImageAsEditableObjects(
         extraGradientCount,
         extraClipCount,
         fitMeanDeltaEOklab: Number(fit.meanDeltaEOklab.toFixed(3)),
+        contourStroke,
       });
       objRegionIds.push(sub.id);
     }

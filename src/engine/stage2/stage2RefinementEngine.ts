@@ -46,6 +46,13 @@ export interface EditableRegionSlot {
   extraGradientCount: number;
   extraClipCount: number;
   fitMeanDeltaEOklab: number;
+  contourStroke?: {
+    d: string;
+    strokeWidth: number;
+    linecap: 'round' | 'butt' | 'square';
+    linejoin: 'round' | 'miter' | 'bevel';
+    miterlimit: number;
+  };
 }
 
 export interface EditableObjectSlot {
@@ -182,11 +189,18 @@ export function compileSlotsToSceneAndSvg(
           ? ` fill-opacity="${Number(rSlot.fillOpacity.toFixed(3))}"`
           : '';
       const eoAttr = rSlot.usesEvenOdd ? ' fill-rule="evenodd"' : '';
+      const stroke = rSlot.contourStroke;
 
       pathCount++;
-      childXml.push(
-        `<path id="${rSlot.svgPathId}" data-natureza="${rSlot.sub.nature}" fill="${rSlot.fillValue}"${opAttr}${eoAttr} d="${rSlot.pathD}"/>`
-      );
+      if (stroke) {
+        childXml.push(
+          `<path id="${rSlot.svgPathId}" data-natureza="contorno" fill="none" stroke="${rSlot.fillValue}" stroke-width="${stroke.strokeWidth}" stroke-linecap="${stroke.linecap}" stroke-linejoin="${stroke.linejoin}" stroke-miterlimit="${stroke.miterlimit}"${opAttr} d="${stroke.d}"/>`
+        );
+      } else {
+        childXml.push(
+          `<path id="${rSlot.svgPathId}" data-natureza="${rSlot.sub.nature}" fill="${rSlot.fillValue}"${opAttr}${eoAttr} d="${rSlot.pathD}"/>`
+        );
+      }
 
       if (rSlot.extraElementsXml) {
         childXml.push(rSlot.extraElementsXml);
@@ -825,7 +839,8 @@ export async function runStage2IterativeRefinement(
       for (const rid of objSlot.regionIds) {
         const newGeom = refinedTopo.geometriesByRegion.get(rid);
         const rSlot = candRegionSlots.get(rid);
-        if (newGeom && newGeom.pathD && rSlot) {
+        if (!rSlot || rSlot.contourStroke) continue;
+        if (newGeom && newGeom.pathD) {
           const shiftedD = translatePathD(newGeom.pathD, lx0, ly0);
           rSlot.pathD = shiftedD;
           rSlot.usesEvenOdd = newGeom.usesEvenOdd;

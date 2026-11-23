@@ -80,8 +80,9 @@ export function buildPotraceOptions(params: VectorizationParameters): PotraceOpt
 }
 
 function fmtCoord(v: number): string {
-  const r = Math.round(v * 100) / 100;
-  return Number.isInteger(r) ? String(r) : r.toFixed(2).replace(/0$/, '');
+  const r = Math.round(v * 1000) / 1000;
+  if (Object.is(r, -0) || r === 0) return '0';
+  return Number.isInteger(r) ? String(r) : r.toFixed(3).replace(/\.?0+$/, '');
 }
 
 /**

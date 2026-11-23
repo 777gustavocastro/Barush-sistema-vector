@@ -21,6 +21,7 @@ import {
   normalizeSvgForEditorsAndScaling,
   optimizeVectorSvg,
 } from '../optimization/svgoOptimizer';
+import { inspectAndSanitizeSvgContours } from '../geometry/contourInspector';
 import { validateSvgStructure } from '../validation/fileValidator';
 import { reconstructNativeSvgGradients } from '../gradients/svgGradientReconstructor';
 import {
@@ -120,7 +121,13 @@ export async function runVectorizationOnRgbaInternal(
 
   const effectiveSliders: TunedSliderValues =
     params.profile === 'auto' && params.autoTune
-      ? { ...colorAnalysis.recommendedParameters }
+      ? {
+          ...colorAnalysis.recommendedParameters,
+          noiseRemoval: Math.max(
+            colorAnalysis.recommendedParameters.noiseRemoval,
+            params.noiseRemoval ?? 0
+          ),
+        }
       : {
           colorCount: params.colorCount,
           detailPrecision: params.detailPrecision,
@@ -162,8 +169,14 @@ export async function runVectorizationOnRgbaInternal(
     });
 
     const monoRaw = await vectorizeWithPotrace(denoisedImage, resolvedParams);
-    const monoNorm = normalizeSvgForEditorsAndScaling(
+    const monoSanitized = inspectAndSanitizeSvgContours(
       monoRaw,
+      denoisedImage,
+      1,
+      resolvedParams.pathSimplification >= 65 ? 2 : 3
+    ).svg;
+    const monoNorm = normalizeSvgForEditorsAndScaling(
+      monoSanitized,
       originalWidth,
       originalHeight,
       denoisedImage.width,
@@ -395,7 +408,7 @@ export async function runVectorizationOnRgbaInternal(
       typoScaledGroups = typoScaled.groupsXml;
     }
 
-    // Variante VTracer A: Spline equilibrado com agrupamento em objetos + gradientes nativos
+    // Variante VTracer A: Spline equilibrado com agrupamento em objetos + gradientes nativos + saneamento de contornos
     const rawVtSpline = await vectorizeWithVTracer(
       traceInputImage,
       resolvedParams,
@@ -407,8 +420,14 @@ export async function runVectorizationOnRgbaInternal(
       viewBoxWidth,
       viewBoxHeight
     );
-    const cand2Svg = normalizeSvgForEditorsAndScaling(
+    const sanitizedVtSpline = inspectAndSanitizeSvgContours(
       groupedVtSpline,
+      denoisedImage,
+      denoisedImage.width / viewBoxWidth,
+      resolvedParams.pathSimplification >= 65 ? 2 : 3
+    ).svg;
+    const cand2Svg = normalizeSvgForEditorsAndScaling(
+      sanitizedVtSpline,
       originalWidth,
       originalHeight,
       viewBoxWidth,
@@ -445,8 +464,14 @@ export async function runVectorizationOnRgbaInternal(
         viewBoxWidth,
         viewBoxHeight
       );
-      const cand3Svg = normalizeSvgForEditorsAndScaling(
+      const sanitizedVtFine = inspectAndSanitizeSvgContours(
         groupedVtFine,
+        denoisedImage,
+        denoisedImage.width / viewBoxWidth,
+        resolvedParams.pathSimplification >= 65 ? 2 : 3
+      ).svg;
+      const cand3Svg = normalizeSvgForEditorsAndScaling(
+        sanitizedVtFine,
         originalWidth,
         originalHeight,
         viewBoxWidth,

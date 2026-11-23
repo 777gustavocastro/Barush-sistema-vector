@@ -59,11 +59,11 @@ interface ResultsAreaProps {
   onClearToUpload: () => void;
 }
 
-const ZOOM_MIN = 50;
-const ZOOM_MAX = 600;
+const ZOOM_MIN = 25;
+const ZOOM_MAX = 800;
 
 function nextZoomStep(current: number, direction: 'in' | 'out'): number {
-  const steps = [50, 75, 100, 150, 200, 300, 400, 600];
+  const steps = [25, 50, 75, 100, 150, 200, 300, 400, 600, 800];
   if (direction === 'in') {
     return steps.find((s) => s > current) ?? ZOOM_MAX;
   }
@@ -592,6 +592,11 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
                   {vectorResult.qualityReport.hausdorffP99Px !== undefined && (
                     <span className="font-mono text-zinc-400">
                       Hausdorff P99: {vectorResult.qualityReport.hausdorffP99Px}px
+                    </span>
+                  )}
+                  {vectorResult.stage2Report?.contourThicknessConsistencyPct !== undefined && (
+                    <span className="font-mono text-emerald-300/90">
+                      Espessura: {vectorResult.stage2Report.contourThicknessConsistencyPct}%
                     </span>
                   )}
                 </div>

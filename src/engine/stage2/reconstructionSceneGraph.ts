@@ -68,6 +68,7 @@ export type Stage2DefectCategory =
   | 'excess_fragmentation'
   | 'gradient_discontinuity'
   | 'contour_deformation'
+  | 'contour_thickness_mismatch'
   | 'missing_small_detail';
 
 export interface Stage2DetectedDefect {
@@ -149,6 +150,11 @@ export interface Stage2InspectionReport {
   iterationHistory?: Stage2MetricsSnapshot[];
   appliedRepairs?: Stage2AppliedRepairRecord[];
   iterationsExecuted?: number;
+  contourThicknessConsistencyPct?: number;
+  meanOrigContourThicknessPx?: number;
+  meanVecContourThicknessPx?: number;
+  sanitizedMicroSegmentsCount?: number;
+  sanitizedSpikesCount?: number;
 }
 
 /**

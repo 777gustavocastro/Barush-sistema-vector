@@ -11,6 +11,10 @@ import {
   type RegionTopologyMetadata,
 } from '../topology/planarTopologyGraph';
 import type { AdaptiveCurveFitOptions } from '../geometry/adaptiveBezierFitter';
+import {
+  evaluateContourThicknessConsistency,
+  inspectAndSanitizeSvgContours,
+} from '../geometry/contourInspector';
 import { renderSvgSupersampled } from './supersampledSvgRenderer';
 import {
   evaluateStage2Comprehensive,
@@ -431,21 +435,42 @@ export async function runStage2IterativeRefinement(
     bestCompiled.gradientCount
   );
 
+  const thicknessB = evaluateContourThicknessConsistency(
+    originalImage,
+    renderedB,
+    decomposition.regionIdMap,
+    decomposition.hasUniformOpaqueBackground,
+    decomposition.backgroundRgb
+  );
+
   let bestEval: FullStage2Evaluation = evalB;
+  let bestThickness = thicknessB;
   let bestScore = computeUnifiedQualityScore(evalB.snapshot);
   const iterationHistory: Stage2MetricsSnapshot[] = [evalB.snapshot];
   const appliedRepairs: Stage2AppliedRepairRecord[] = [];
   let iterationsExecuted = 0;
 
-  // Critério de convergência imediata: nenhuma correção desnecessária em cenas já precisas!
+  // Critério de convergência imediata: nenhuma correção desnecessária em cenas já precisas e com espessura fiel!
   if (
     evalB.defects.length === 0 &&
     evalB.snapshot.meanDeltaE2000 <= 0.45 &&
     evalB.snapshot.worstRegionDeltaE2000 <= 1.8 &&
-    evalB.snapshot.lostDetailRegionCount === 0
+    evalB.snapshot.lostDetailRegionCount === 0 &&
+    thicknessB.regionBiasCorrectionsPx.size === 0
   ) {
+    const sanitizedFast = inspectAndSanitizeSvgContours(
+      bestCompiled.svg,
+      originalImage,
+      1,
+      baseCurveOptions.precision ?? 3
+    );
     return {
       ...bestCompiled,
+      svg: sanitizedFast.svg,
+      sceneGraph: {
+        ...bestCompiled.sceneGraph,
+        svgMarkup: sanitizedFast.svg,
+      },
       stage2Report: {
         passed: true,
         defects: [],
@@ -456,6 +481,14 @@ export async function runStage2IterativeRefinement(
         iterationHistory,
         appliedRepairs,
         iterationsExecuted: 0,
+        contourThicknessConsistencyPct: thicknessB.thicknessConsistencyPct,
+        meanOrigContourThicknessPx: thicknessB.meanOrigThicknessPx,
+        meanVecContourThicknessPx: thicknessB.meanVecThicknessPx,
+        sanitizedMicroSegmentsCount:
+          sanitizedFast.summary.microSegmentsRemoved + sanitizedFast.summary.collinearMergedCount,
+        sanitizedSpikesCount:
+          sanitizedFast.summary.artificialSpikesTrimmed +
+          sanitizedFast.summary.selfIntersectionsRepaired,
       },
     };
   }
@@ -468,7 +501,13 @@ export async function runStage2IterativeRefinement(
 
   for (let iter = 1; iter <= maxIterations; iter++) {
     if (performance.now() - startedAt > 2400) break;
-    if (bestEval.defects.length === 0 && bestEval.residualIslands.length === 0) break;
+    if (
+      bestEval.defects.length === 0 &&
+      bestEval.residualIslands.length === 0 &&
+      bestThickness.regionBiasCorrectionsPx.size === 0
+    ) {
+      break;
+    }
 
     const candRegionSlots = new Map<number, EditableRegionSlot>();
     for (const [k, v] of bestRegionSlots.entries()) {
@@ -666,7 +705,7 @@ export async function runStage2IterativeRefinement(
       }
     }
 
-    // OPERADOR 3: Refinamento Geométrico Multiescala de Contornos e Pontas Agudas (preservando fronteiras compartilhadas!)
+    // OPERADOR 3: Refinamento Geométrico Multiescala de Contornos, Pontas Agudas e Espessura Visual
     const geomDefectObjects = new Set<number>();
     for (const defect of bestEval.defects) {
       if (
@@ -676,6 +715,13 @@ export async function runStage2IterativeRefinement(
       ) {
         geomDefectObjects.add(defect.affectedObjectId);
         if (geomDefectObjects.size >= 4) break;
+      }
+    }
+    for (const [biasRid] of bestThickness.regionBiasCorrectionsPx.entries()) {
+      const biasSlot = candRegionSlots.get(biasRid);
+      if (biasSlot && !curveRefittedObjects.has(biasSlot.parentObjectId)) {
+        geomDefectObjects.add(biasSlot.parentObjectId);
+        if (geomDefectObjects.size >= 5) break;
       }
     }
 
@@ -721,21 +767,34 @@ export async function runStage2IterativeRefinement(
 
       const localMeta = new Map<number, RegionTopologyMetadata>();
       let zIdx = 1;
+      let hasThicknessCorrection = false;
       for (const rid of objSlot.regionIds) {
         const rs = candRegionSlots.get(rid);
         if (!rs) continue;
+        if (bestThickness.regionBiasCorrectionsPx.has(rid)) {
+          hasThicknessCorrection = true;
+        }
+        let intSample = 0;
+        const stepS = Math.max(1, Math.floor(rs.sub.pixelCount / 160));
+        let totS = 0;
+        for (let k = 0; k < rs.sub.pixelCount; k += stepS) {
+          if (decomposition.interiorMask[rs.sub.pixels[k]]) intSample++;
+          totS++;
+        }
         localMeta.set(rid, {
           zRank: zIdx++,
           isSemiTransparent: rs.sub.isSemiTransparent,
           meanOklab: rs.sub.meanOklab,
+          meanAlpha: rs.sub.meanA,
+          hasThickInterior: rs.sub.pixelCount >= 36 && totS > 0 && intSample / totS >= 0.28,
         });
       }
 
       const refinedCurveOpts: AdaptiveCurveFitOptions = {
-        maxCurveErrorPx: Math.max(0.1, (baseCurveOptions.maxCurveErrorPx ?? 0.24) * 0.52),
-        straightLineTolPx: Math.max(0.12, (baseCurveOptions.straightLineTolPx ?? 0.24) * 0.65),
-        cornerAngleThresholdDeg: Math.max(18, (baseCurveOptions.cornerAngleThresholdDeg ?? 36) - 10),
-        subpixelTubeRadiusPx: 0.3,
+        maxCurveErrorPx: Math.max(0.1, (baseCurveOptions.maxCurveErrorPx ?? 0.22) * 0.55),
+        straightLineTolPx: Math.max(0.12, (baseCurveOptions.straightLineTolPx ?? 0.22) * 0.68),
+        cornerAngleThresholdDeg: Math.max(20, (baseCurveOptions.cornerAngleThresholdDeg ?? 36) - 8),
+        subpixelTubeRadiusPx: 0.38,
         precision: 3,
       };
 
@@ -755,7 +814,9 @@ export async function runStage2IterativeRefinement(
         alphaBytes: localRgba,
         hasUniformBg: decomposition.hasUniformOpaqueBackground,
         backgroundOklab: decomposition.backgroundOklab,
+        backgroundRgb: decomposition.backgroundRgb,
         regionMeta: localMeta,
+        regionBoundaryBiasPx: bestThickness.regionBiasCorrectionsPx,
         curveOptions: refinedCurveOpts,
         enablePorterDuffSeamTuck: true,
       });
@@ -779,9 +840,10 @@ export async function runStage2IterativeRefinement(
           iteration: iter,
           targetType: 'region_curve',
           svgElementId: objSlot.svgGroupId,
-          defectCategory: 'contour_deformation',
-          technicalJustification:
-            'Reajustadas curvas Bézier em tolerância sub-pixel fina (preservando pontas agudas C⁰, concavidades e fronteiras compartilhadas).',
+          defectCategory: hasThicknessCorrection ? 'contour_thickness_mismatch' : 'contour_deformation',
+          technicalJustification: hasThicknessCorrection
+            ? 'Recalibrada posição sub-pixel da fronteira e curvas Bézier para corrigir espessura visual do contorno.'
+            : 'Reajustadas curvas Bézier em tolerância sub-pixel fina (preservando pontas agudas C⁰, concavidades e fronteiras compartilhadas).',
           beforeDeltaE2000: bestEval.snapshot.meanDeltaE2000,
           afterDeltaE2000: bestEval.snapshot.meanDeltaE2000,
         });
@@ -997,6 +1059,13 @@ export async function runStage2IterativeRefinement(
       bestObjectSlots = candObjectSlots;
       bestCompiled = candCompiled;
       bestEval = candEval;
+      bestThickness = evaluateContourThicknessConsistency(
+        originalImage,
+        candRendered,
+        decomposition.regionIdMap,
+        decomposition.hasUniformOpaqueBackground,
+        decomposition.backgroundRgb
+      );
       bestScore = candScore;
       iterationHistory.push(candEval.snapshot);
 
@@ -1021,6 +1090,13 @@ export async function runStage2IterativeRefinement(
     }
   }
 
+  const sanitizedFinal = inspectAndSanitizeSvgContours(
+    bestCompiled.svg,
+    originalImage,
+    1,
+    baseCurveOptions.precision ?? 3
+  );
+
   const finalSnapshot: Stage2MetricsSnapshot = {
     ...bestEval.snapshot,
     versionLabel: iterationsExecuted > 0 ? `Versão C (Após ${iterationsExecuted} it.)` : 'Versão C (Validada)',
@@ -1031,6 +1107,11 @@ export async function runStage2IterativeRefinement(
 
   return {
     ...bestCompiled,
+    svg: sanitizedFinal.svg,
+    sceneGraph: {
+      ...bestCompiled.sceneGraph,
+      svgMarkup: sanitizedFinal.svg,
+    },
     stage2Report: {
       passed: bestEval.defects.filter((d) => d.severity === 'high').length === 0,
       defects: bestEval.defects,
@@ -1041,6 +1122,14 @@ export async function runStage2IterativeRefinement(
       iterationHistory,
       appliedRepairs,
       iterationsExecuted,
+      contourThicknessConsistencyPct: bestThickness.thicknessConsistencyPct,
+      meanOrigContourThicknessPx: bestThickness.meanOrigThicknessPx,
+      meanVecContourThicknessPx: bestThickness.meanVecThicknessPx,
+      sanitizedMicroSegmentsCount:
+        sanitizedFinal.summary.microSegmentsRemoved + sanitizedFinal.summary.collinearMergedCount,
+      sanitizedSpikesCount:
+        sanitizedFinal.summary.artificialSpikesTrimmed +
+        sanitizedFinal.summary.selfIntersectionsRepaired,
     },
   };
 }

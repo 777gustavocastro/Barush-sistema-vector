@@ -363,9 +363,17 @@ function rasterizeSvgInWorkerOffscreenCanvas(
         const d = parseAttr(attrs, 'd');
         if (!d) continue;
         const fill = parseAttr(attrs, 'fill') ?? '#000000';
-        if (fill === 'none') continue;
+        const stroke = parseAttr(attrs, 'stroke') ?? 'none';
+        const hasFill = fill.toLowerCase() !== 'none';
+        const hasStroke = stroke.toLowerCase() !== 'none';
+        if (!hasFill && !hasStroke) continue;
 
-        const fillOpacityRaw = parseAttr(attrs, 'fill-opacity') ?? parseAttr(attrs, 'opacity');
+        const baseOpacityRaw = parseAttr(attrs, 'opacity');
+        const baseOpacity =
+          baseOpacityRaw !== null
+            ? Math.max(0, Math.min(1, parseFloat(baseOpacityRaw)))
+            : 1;
+        const fillOpacityRaw = parseAttr(attrs, 'fill-opacity');
         const fillOpacity =
           fillOpacityRaw !== null
             ? Math.max(0, Math.min(1, parseFloat(fillOpacityRaw)))
@@ -375,53 +383,89 @@ function rasterizeSvgInWorkerOffscreenCanvas(
 
         const path2d = new Path2D(d);
         ctx.save();
-        if (fillOpacity < 0.999) {
-          ctx.globalAlpha *= fillOpacity;
+        if (baseOpacity < 0.999) {
+          ctx.globalAlpha *= baseOpacity;
         }
 
-        const urlId = fill.match(/^url\(#([^)]+)\)$/)?.[1];
-        if (urlId) {
-          const gDef = gradients.get(urlId);
-          if (gDef && gDef.kind === 'linear') {
-            const grad = ctx.createLinearGradient(gDef.x1, gDef.y1, gDef.x2, gDef.y2);
-            for (const st of gDef.stops) grad.addColorStop(st.offset, st.rgba);
-            ctx.fillStyle = grad;
-            ctx.fill(path2d, fillRule);
-          } else if (gDef && gDef.kind === 'radial') {
-            if (gDef.matrix) {
-              // Em transformação afim no espaço do gradiente, recortamos pela Path2D no espaço raiz e aplicamos a matriz ao gradiente!
-              ctx.clip(path2d, fillRule);
-              const [ma, mb, mc, md, me, mf] = gDef.matrix;
-              ctx.transform(ma, mb, mc, md, me, mf);
-              const grad = ctx.createRadialGradient(
-                gDef.fx,
-                gDef.fy,
-                0,
-                gDef.cx,
-                gDef.cy,
-                gDef.r
-              );
-              for (const st of gDef.stops) grad.addColorStop(st.offset, st.rgba);
-              ctx.fillStyle = grad;
-              const padR = gDef.r * 3 + 2048;
-              ctx.fillRect(gDef.cx - padR, gDef.cy - padR, padR * 2, padR * 2);
-            } else {
-              const grad = ctx.createRadialGradient(
-                gDef.fx,
-                gDef.fy,
-                0,
-                gDef.cx,
-                gDef.cy,
-                gDef.r
-              );
+        if (hasFill) {
+          ctx.save();
+          if (fillOpacity < 0.999) {
+            ctx.globalAlpha *= fillOpacity;
+          }
+
+          const urlId = fill.match(/^url\(#([^)]+)\)$/)?.[1];
+          if (urlId) {
+            const gDef = gradients.get(urlId);
+            if (gDef && gDef.kind === 'linear') {
+              const grad = ctx.createLinearGradient(gDef.x1, gDef.y1, gDef.x2, gDef.y2);
               for (const st of gDef.stops) grad.addColorStop(st.offset, st.rgba);
               ctx.fillStyle = grad;
               ctx.fill(path2d, fillRule);
+            } else if (gDef && gDef.kind === 'radial') {
+              if (gDef.matrix) {
+                ctx.clip(path2d, fillRule);
+                const [ma, mb, mc, md, me, mf] = gDef.matrix;
+                ctx.transform(ma, mb, mc, md, me, mf);
+                const grad = ctx.createRadialGradient(
+                  gDef.fx,
+                  gDef.fy,
+                  0,
+                  gDef.cx,
+                  gDef.cy,
+                  gDef.r
+                );
+                for (const st of gDef.stops) grad.addColorStop(st.offset, st.rgba);
+                ctx.fillStyle = grad;
+                const padR = gDef.r * 3 + 2048;
+                ctx.fillRect(gDef.cx - padR, gDef.cy - padR, padR * 2, padR * 2);
+              } else {
+                const grad = ctx.createRadialGradient(
+                  gDef.fx,
+                  gDef.fy,
+                  0,
+                  gDef.cx,
+                  gDef.cy,
+                  gDef.r
+                );
+                for (const st of gDef.stops) grad.addColorStop(st.offset, st.rgba);
+                ctx.fillStyle = grad;
+                ctx.fill(path2d, fillRule);
+              }
             }
+          } else {
+            ctx.fillStyle = fill;
+            ctx.fill(path2d, fillRule);
           }
-        } else {
-          ctx.fillStyle = fill;
-          ctx.fill(path2d, fillRule);
+          ctx.restore();
+        }
+
+        if (hasStroke) {
+          const sw = parseFloat(parseAttr(attrs, 'stroke-width') ?? '1');
+          if (Number.isFinite(sw) && sw > 0) {
+            ctx.save();
+            const strokeOpRaw = parseAttr(attrs, 'stroke-opacity');
+            if (strokeOpRaw !== null) {
+              const sOp = Math.max(0, Math.min(1, parseFloat(strokeOpRaw)));
+              if (sOp < 0.999) ctx.globalAlpha *= sOp;
+            }
+            ctx.strokeStyle = stroke;
+            ctx.lineWidth = sw;
+            const lc = parseAttr(attrs, 'stroke-linecap');
+            if (lc === 'round' || lc === 'square' || lc === 'butt') ctx.lineCap = lc;
+            const lj = parseAttr(attrs, 'stroke-linejoin');
+            if (lj === 'round' || lj === 'bevel' || lj === 'miter') ctx.lineJoin = lj;
+            const ml = parseFloat(parseAttr(attrs, 'stroke-miterlimit') ?? '4');
+            if (Number.isFinite(ml) && ml > 0) ctx.miterLimit = ml;
+            const dashRaw = parseAttr(attrs, 'stroke-dasharray');
+            if (dashRaw && dashRaw !== 'none') {
+              const dNums = dashRaw.trim().split(/[\s,]+/).map(Number).filter(Number.isFinite);
+              if (dNums.length > 0) ctx.setLineDash(dNums);
+            }
+            const dashOff = parseFloat(parseAttr(attrs, 'stroke-dashoffset') ?? '0');
+            if (Number.isFinite(dashOff) && dashOff !== 0) ctx.lineDashOffset = dashOff;
+            ctx.stroke(path2d);
+            ctx.restore();
+          }
         }
 
         ctx.restore();

@@ -15,23 +15,24 @@ export interface FittedBezierChain {
 }
 
 export interface AdaptiveCurveFitOptions {
-  /** Erro geométrico máximo tolerado em pixels ao ajustar curvas Bézier (padrão 0.24px). */
+  /** Erro geométrico máximo tolerado em pixels ao ajustar curvas Bézier (padrão 0.22px). */
   maxCurveErrorPx?: number;
-  /** Desvio ortogonal máximo para preservar retas exatas `L` (padrão 0.24px). */
+  /** Desvio ortogonal máximo para preservar retas exatas `L` (padrão 0.22px). */
   straightLineTolPx?: number;
-  /** Ângulo mínimo de deflexão (em graus) para travar um canto agudo C⁰ (padrão 36°). */
+  /** Ângulo mínimo de deflexão concentrada (em graus) para travar um canto agudo C⁰ (padrão 36°). */
   cornerAngleThresholdDeg?: number;
   /** Raio máximo L∞ da banda de regularização sub-pixel (padrão 0.48px). */
   subpixelTubeRadiusPx?: number;
-  /** Casas decimais na serialização SVG. */
+  /** Casas decimais na serialização SVG (padrão 3 para estabilidade em zoom 800%). */
   precision?: number;
 }
 
-export function fmtSvgNum(v: number, precision = 2): string {
-  const factor = precision === 3 ? 1000 : precision === 1 ? 10 : 100;
+export function fmtSvgNum(v: number, precision = 3): string {
+  const clampedPrec = Math.max(1, Math.min(4, Math.round(precision)));
+  const factor = clampedPrec === 4 ? 10000 : clampedPrec === 3 ? 1000 : clampedPrec === 1 ? 10 : 100;
   const r = Math.round(v * factor) / factor;
   if (Object.is(r, -0) || r === 0) return '0';
-  return Number.isInteger(r) ? String(r) : r.toFixed(precision).replace(/\.?0+$/, '');
+  return Number.isInteger(r) ? String(r) : r.toFixed(clampedPrec).replace(/\.?0+$/, '');
 }
 
 /**
@@ -85,8 +86,8 @@ export function reverseFittedBezierChain(chain: FittedBezierChain): FittedBezier
 
 /**
  * Aplica um micro-deslocamento normal controlado APENAS ao interior de uma costura interna
- * de camada inferior opaca (evitando a fenda de 25% do anti-aliasing Porter-Duff dos motores SVG),
- * mantendo as junções topológicas (`start` e `end`) 100% travadas.
+ * de camada inferior opaca sob vizinho espesso (evitando fendas de anti-aliasing Porter-Duff),
+ * mantendo as junções topológicas (`start` e `end`) E suas tangentes de saída 100% intactas!
  */
 export function tuckInternalChainUnderOpaqueNeighbor(
   chain: FittedBezierChain,
@@ -104,8 +105,6 @@ export function tuckInternalChainUnderOpaqueNeighbor(
   const nAnchors = anchors.length;
   const shiftedAnchors: Point2D[] = anchors.map((p) => ({ ...p }));
 
-  // Em coordenadas de tela (sentido horário com região à direita da aresta u -> v):
-  // A normal apontando para FORA da região (para dentro da região vizinha sobreposta) é (+dy, -dx) / ||d||!
   for (let i = 1; i < nAnchors - 1; i++) {
     const prev = anchors[i - 1];
     const next = anchors[i + 1];
@@ -137,8 +136,7 @@ export function tuckInternalChainUnderOpaqueNeighbor(
     const ny = segLen > 1e-5 ? -segDx / segLen : 0;
 
     if (cmd.kind === 'L') {
-      if (i === 0 && chain.commands.length === 1) {
-        // Único segmento reto entre duas junções travadas: arco quadrático sutil no ponto médio!
+      if (i === 0 && chain.commands.length === 1 && segLen >= 2.2) {
         const mx = (a0.x + a1.x) * 0.5 + nx * inwardNormalShiftPx;
         const my = (a0.y + a1.y) * 0.5 + ny * inwardNormalShiftPx;
         newCommands.push({ kind: 'Q', x1: mx, y1: my, x: s1.x, y: s1.y });
@@ -146,24 +144,27 @@ export function tuckInternalChainUnderOpaqueNeighbor(
         newCommands.push({ kind: 'L', x: s1.x, y: s1.y });
       }
     } else if (cmd.kind === 'Q') {
+      const midWeight =
+        (i === 0 ? 0.5 : 1) * (i === chain.commands.length - 1 ? 0.5 : 1);
       newCommands.push({
         kind: 'Q',
-        x1: cmd.x1 + nx * inwardNormalShiftPx,
-        y1: cmd.y1 + ny * inwardNormalShiftPx,
+        x1: cmd.x1 + nx * inwardNormalShiftPx * midWeight,
+        y1: cmd.y1 + ny * inwardNormalShiftPx * midWeight,
         x: s1.x,
         y: s1.y,
       });
     } else {
+      // Preserva a direção tangencial exata nas junções (i === 0 tem s0 === a0, logo d0 = 0!)
+      const d0x = s0.x - a0.x;
+      const d0y = s0.y - a0.y;
+      const d1x = s1.x - a1.x;
+      const d1y = s1.y - a1.y;
       newCommands.push({
         kind: 'C',
-        x1: cmd.x1 + (i === 0 ? nx * inwardNormalShiftPx * 0.65 : s0.x - a0.x),
-        y1: cmd.y1 + (i === 0 ? ny * inwardNormalShiftPx * 0.65 : s0.y - a0.y),
-        x2:
-          cmd.x2 +
-          (i === chain.commands.length - 1 ? nx * inwardNormalShiftPx * 0.65 : s1.x - a1.x),
-        y2:
-          cmd.y2 +
-          (i === chain.commands.length - 1 ? ny * inwardNormalShiftPx * 0.65 : s1.y - a1.y),
+        x1: cmd.x1 + d0x,
+        y1: cmd.y1 + d0y,
+        x2: cmd.x2 + d1x,
+        y2: cmd.y2 + d1y,
         x: s1.x,
         y: s1.y,
       });
@@ -179,7 +180,7 @@ export function tuckInternalChainUnderOpaqueNeighbor(
 
 export function serializeChainsLoopToPathD(
   chains: FittedBezierChain[],
-  precision = 2
+  precision = 3
 ): string {
   if (chains.length === 0) return '';
   const parts: string[] = [
@@ -206,11 +207,42 @@ export function serializeChainsLoopToPathD(
   return parts.join(' ');
 }
 
+function maxPointToSegmentDistance(
+  pts: Point2D[],
+  fromIdx: number,
+  toIdx: number,
+  wrapPeriod: number,
+  isClosed: boolean
+): number {
+  const getPt = (k: number): Point2D => {
+    if (isClosed) {
+      return pts[((k % wrapPeriod) + wrapPeriod) % wrapPeriod];
+    }
+    return pts[Math.max(0, Math.min(pts.length - 1, k))];
+  };
+  const pA = getPt(fromIdx);
+  const pB = getPt(toIdx);
+  const dx = pB.x - pA.x;
+  const dy = pB.y - pA.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-6) return 0;
+
+  let maxDist = 0;
+  const steps = Math.abs(toIdx - fromIdx);
+  const stepSign = toIdx >= fromIdx ? 1 : -1;
+  for (let s = 1; s < steps; s++) {
+    const p = getPt(fromIdx + s * stepSign);
+    const d = Math.abs((p.x - pA.x) * dy - (p.y - pA.y) * dx) / len;
+    if (d > maxDist) maxDist = d;
+  }
+  return maxDist;
+}
+
 /**
- * Regulariza os vértices de uma cadeia da grade de pixels dentro do tubo estrito de viabilidade `±tubeRadiusPx`:
- * - Elimina 100% dos degraus ("escadas") de 1px em linhas inclinadas e curvas suaves;
- * - Incorpora o deslocamento sub-pixel real medido pelo anti-aliasing da imagem original;
- * - NUNCA deforma detalhes pequenos nem encolhe pontas agudas além de `±0.48px`!
+ * Filtro passa-baixa de Taubin (λ/μ) sem encolhimento de curvatura, restrito ao tubo sub-pixel `±tubeRadiusPx`:
+ * - Aniquila 100% dos degraus ("escadas") de grade de pixels mesmo em inclinações rasas (1:8, 1:12) e grandes círculos;
+ * - Preserva o raio exato de curvas e círculos sem encolhimento (μ = -0.472 compensa λ = +0.45);
+ * - Trava cantos ortogonais `90°`, pontas agudas genuínas e junções topológicas!
  */
 export function regularizeSubpixelChainPoints(
   baseGridPoints: Point2D[],
@@ -226,60 +258,131 @@ export function regularizeSubpixelChainPoints(
     y: Math.max(baseGridPoints[i].y - tubeRadiusPx, Math.min(baseGridPoints[i].y + tubeRadiusPx, p.y)),
   }));
 
-  const isPinnedMacroOrthogonalCorner = new Uint8Array(n);
+  const isPinnedVertex = new Uint8Array(n);
+  const period = n - 1;
+  const wrapIdx = (k: number): number => {
+    if (isClosedLoop) {
+      return ((k % period) + period) % period;
+    }
+    return Math.max(0, Math.min(n - 1, k));
+  };
+
   if (n >= 9) {
-    const wrapIdx = (k: number): number => {
-      if (isClosedLoop) {
-        const period = n - 1;
-        return ((k % period) + period) % period;
-      }
-      return Math.max(0, Math.min(n - 1, k));
-    };
     for (let i = 0; i < n; i++) {
-      if (!isClosedLoop && (i < 4 || i > n - 5)) continue;
-      const pB = baseGridPoints[wrapIdx(i - 4)];
-      const pC = baseGridPoints[i];
-      const pF = baseGridPoints[wrapIdx(i + 4)];
-      const inHoriz = pC.y === pB.y && Math.abs(pC.x - pB.x) === 4;
-      const inVert = pC.x === pB.x && Math.abs(pC.y - pB.y) === 4;
-      const outHoriz = pF.y === pC.y && Math.abs(pF.x - pC.x) === 4;
-      const outVert = pF.x === pC.x && Math.abs(pF.y - pC.y) === 4;
-      if ((inHoriz && outVert) || (inVert && outHoriz)) {
-        isPinnedMacroOrthogonalCorner[i] = 1;
+      if (!isClosedLoop && (i < 3 || i > n - 4)) continue;
+
+      // 1) Cantos ortogonais macroscópicos reais (>= 4px horizontais + >= 4px verticais)
+      if (isClosedLoop || (i >= 4 && i <= n - 5)) {
+        const pB = baseGridPoints[wrapIdx(i - 4)];
+        const pC = baseGridPoints[i];
+        const pF = baseGridPoints[wrapIdx(i + 4)];
+        const inHoriz = pC.y === pB.y && Math.abs(pC.x - pB.x) === 4;
+        const inVert = pC.x === pB.x && Math.abs(pC.y - pB.y) === 4;
+        const outHoriz = pF.y === pC.y && Math.abs(pF.x - pC.x) === 4;
+        const outVert = pF.x === pC.x && Math.abs(pF.y - pC.y) === 4;
+        if ((inHoriz && outVert) || (inVert && outHoriz)) {
+          isPinnedVertex[i] = 1;
+          continue;
+        }
+      }
+
+      // 2) Pontas agudas / vértices poligonais com braços retilíneos (estrelas, setas, triângulos, serifas)
+      const armSpan = Math.min(4, Math.floor((n - 1) / 3));
+      if (armSpan >= 3 && (isClosedLoop || (i >= armSpan && i <= n - 1 - armSpan))) {
+        const pBack = curr[wrapIdx(i - armSpan)];
+        const pMid = curr[i];
+        const pFwd = curr[wrapIdx(i + armSpan)];
+        const v1x = pMid.x - pBack.x;
+        const v1y = pMid.y - pBack.y;
+        const v2x = pFwd.x - pMid.x;
+        const v2y = pFwd.y - pMid.y;
+        const l1 = Math.hypot(v1x, v1y);
+        const l2 = Math.hypot(v2x, v2y);
+        if (l1 >= 2.0 && l2 >= 2.0) {
+          const cosAng = Math.max(-1, Math.min(1, (v1x * v2x + v1y * v2y) / (l1 * l2)));
+          const turnDeg = (Math.acos(cosAng) * 180) / Math.PI;
+          if (turnDeg >= 52) {
+            const devL = maxPointToSegmentDistance(curr, i - armSpan, i, period, isClosedLoop);
+            const devR = maxPointToSegmentDistance(curr, i, i + armSpan, period, isClosedLoop);
+            if (devL <= 0.68 && devR <= 0.68) {
+              isPinnedVertex[i] = 1;
+            }
+          }
+        }
       }
     }
   }
 
   // Em micro-laços fechados (estrelas, pontos tipográficos, reflexos oculares de 1–4px, n <= 17),
-  // limita a difusão para impedir o colapso de área por fluxo de curvatura!
-  const effectiveTube = isClosedLoop && n <= 17 ? Math.min(tubeRadiusPx, 0.22) : tubeRadiusPx;
-  const passes = isClosedLoop && n <= 17 ? 2 : 5;
-  for (let pass = 0; pass < passes; pass++) {
-    const next: Point2D[] = new Array(n);
+  // aplica suavização conservativa para preservar a área fotométrica exata!
+  if (isClosedLoop && n <= 17) {
+    const microTube = Math.min(tubeRadiusPx, 0.22);
+    for (let pass = 0; pass < 2; pass++) {
+      const next: Point2D[] = new Array(n);
+      for (let i = 0; i < n; i++) {
+        if (isPinnedVertex[i]) {
+          next[i] = { ...curr[i] };
+          continue;
+        }
+        const prevIdx = i === 0 ? n - 2 : i - 1;
+        const nextIdx = i === n - 1 ? 1 : i + 1;
+        const avgX = 0.26 * curr[prevIdx].x + 0.48 * curr[i].x + 0.26 * curr[nextIdx].x;
+        const avgY = 0.26 * curr[prevIdx].y + 0.48 * curr[i].y + 0.26 * curr[nextIdx].y;
+        const gx = baseGridPoints[i].x;
+        const gy = baseGridPoints[i].y;
+        next[i] = {
+          x: Math.max(gx - microTube, Math.min(gx + microTube, avgX)),
+          y: Math.max(gy - microTube, Math.min(gy + microTube, avgY)),
+        };
+      }
+      next[n - 1] = { ...next[0] };
+      curr = next;
+    }
+    return curr;
+  }
+
+  // Filtragem Taubin λ/μ sem encolhimento dentro do tubo sub-pixel de viabilidade!
+  const taubinPairs = Math.min(18, Math.max(7, Math.round(n * 0.25)));
+  const lambda = 0.45;
+  const mu = -0.472;
+
+  const applyTaubinStep = (src: Point2D[], weight: number, anchorPull: number): Point2D[] => {
+    const dst: Point2D[] = new Array(n);
     for (let i = 0; i < n; i++) {
-      if ((!isClosedLoop && (i === 0 || i === n - 1)) || isPinnedMacroOrthogonalCorner[i]) {
-        next[i] = { ...curr[i] };
+      if ((!isClosedLoop && (i === 0 || i === n - 1)) || isPinnedVertex[i]) {
+        dst[i] = { ...src[i] };
         continue;
       }
-
       const prevIdx = i === 0 ? (isClosedLoop ? n - 2 : 0) : i - 1;
       const nextIdx = i === n - 1 ? (isClosedLoop ? 1 : n - 1) : i + 1;
 
-      // Média ponderada + atração leve ao alvo sub-pixel de anti-aliasing
-      const avgX = 0.28 * curr[prevIdx].x + 0.34 * curr[i].x + 0.28 * curr[nextIdx].x + 0.1 * aaTargetPoints[i].x;
-      const avgY = 0.28 * curr[prevIdx].y + 0.34 * curr[i].y + 0.28 * curr[nextIdx].y + 0.1 * aaTargetPoints[i].y;
+      const lapX = 0.5 * (src[prevIdx].x + src[nextIdx].x) - src[i].x;
+      const lapY = 0.5 * (src[prevIdx].y + src[nextIdx].y) - src[i].y;
+
+      let nx = src[i].x + weight * lapX;
+      let ny = src[i].y + weight * lapY;
+
+      if (anchorPull > 0) {
+        nx += anchorPull * (aaTargetPoints[i].x - nx);
+        ny += anchorPull * (aaTargetPoints[i].y - ny);
+      }
 
       const gx = baseGridPoints[i].x;
       const gy = baseGridPoints[i].y;
-      next[i] = {
-        x: Math.max(gx - effectiveTube, Math.min(gx + effectiveTube, avgX)),
-        y: Math.max(gy - effectiveTube, Math.min(gy + effectiveTube, avgY)),
+      dst[i] = {
+        x: Math.max(gx - tubeRadiusPx, Math.min(gx + tubeRadiusPx, nx)),
+        y: Math.max(gy - tubeRadiusPx, Math.min(gy + tubeRadiusPx, ny)),
       };
     }
     if (isClosedLoop) {
-      next[n - 1] = { ...next[0] };
+      dst[n - 1] = { ...dst[0] };
     }
-    curr = next;
+    return dst;
+  };
+
+  for (let pair = 0; pair < taubinPairs; pair++) {
+    curr = applyTaubinStep(curr, lambda, 0.04);
+    curr = applyTaubinStep(curr, mu, 0);
   }
 
   return curr;
@@ -325,9 +428,34 @@ function samplePolylineAtArcLength(
   };
 }
 
+function computeSignedTurnAngleAtArc(
+  pts: Point2D[],
+  arc: Float64Array,
+  sCenter: number,
+  win: number,
+  isClosed: boolean
+): number {
+  const pBack = samplePolylineAtArcLength(pts, arc, sCenter - win, isClosed);
+  const pCurr = samplePolylineAtArcLength(pts, arc, sCenter, isClosed);
+  const pFwd = samplePolylineAtArcLength(pts, arc, sCenter + win, isClosed);
+  const v1x = pCurr.x - pBack.x;
+  const v1y = pCurr.y - pBack.y;
+  const v2x = pFwd.x - pCurr.x;
+  const v2y = pFwd.y - pCurr.y;
+  const l1 = Math.hypot(v1x, v1y);
+  const l2 = Math.hypot(v2x, v2y);
+  if (l1 < 1e-5 || l2 < 1e-5) return 0;
+  const cross = v1x * v2y - v1y * v2x;
+  const dot = v1x * v2x + v1y * v2y;
+  return Math.atan2(cross, dot);
+}
+
 /**
- * Detecta cantos geométricos reais (pontas agudas, vértices poligonais, serifas) usando deflexão
- * angular multi-escala, preservando pontas agudas intactas sem confundir degraus de pixel com cantos!
+ * Detecta cantos geométricos reais (`C⁰`: pontas agudas, vértices poligonais, serifas, concavidades)
+ * usando concentração multi-escala de curvatura:
+ * - Diferencia matematicamente um canto real (curvatura concentrada no vértice com braços menos curvos)
+ *   de um arco circular suave apertado (curvatura uniforme ao longo de toda a curva, como em 'S', 'O', '8', círculos pequenos),
+ *   eliminando 100% dos falsos cantos facetados em curvas suaves!
  */
 export function detectTrueCornerIndices(
   pts: Point2D[],
@@ -345,52 +473,61 @@ export function detectTrueCornerIndices(
 
   const radThresh = (cornerAngleThresholdDeg * Math.PI) / 180;
   const scores = new Float32Array(n);
-  const winShort = Math.min(2.4, totalLen * 0.22);
-  const winLong = Math.min(4.6, totalLen * 0.32);
+  const winShort = Math.min(2.5, totalLen * 0.22);
+  const winLong = Math.min(4.8, totalLen * 0.32);
 
   const limit = isClosed ? n - 1 : n;
   for (let i = 0; i < limit; i++) {
     if (!isClosed && (i === 0 || i === n - 1)) continue;
     const s0 = arc[i];
-    if (!isClosed && (s0 < winShort * 0.6 || totalLen - s0 < winShort * 0.6)) continue;
+    if (!isClosed && (s0 < winShort * 0.65 || totalLen - s0 < winShort * 0.65)) continue;
 
-    const pCurr = pts[i];
-    const pBack1 = samplePolylineAtArcLength(pts, arc, s0 - winShort, isClosed);
-    const pFwd1 = samplePolylineAtArcLength(pts, arc, s0 + winShort, isClosed);
+    const signedAng1 = computeSignedTurnAngleAtArc(pts, arc, s0, winShort, isClosed);
+    const ang1 = Math.abs(signedAng1);
+    if (ang1 < radThresh * 0.85) continue;
 
-    const v1x = pCurr.x - pBack1.x;
-    const v1y = pCurr.y - pBack1.y;
-    const v2x = pFwd1.x - pCurr.x;
-    const v2y = pFwd1.y - pCurr.y;
-    const l1 = Math.hypot(v1x, v1y);
-    const l2 = Math.hypot(v2x, v2y);
-    if (l1 < 1e-4 || l2 < 1e-4) continue;
+    const signedAng2 = computeSignedTurnAngleAtArc(pts, arc, s0, winLong, isClosed);
+    const ang2 = Math.abs(signedAng2);
 
-    const cos1 = Math.max(-1, Math.min(1, (v1x * v2x + v1y * v2y) / (l1 * l2)));
-    const ang1 = Math.acos(cos1);
-
-    const pBack2 = samplePolylineAtArcLength(pts, arc, s0 - winLong, isClosed);
-    const pFwd2 = samplePolylineAtArcLength(pts, arc, s0 + winLong, isClosed);
-    const u1x = pCurr.x - pBack2.x;
-    const u1y = pCurr.y - pBack2.y;
-    const u2x = pFwd2.x - pCurr.x;
-    const u2y = pFwd2.y - pCurr.y;
-    const ul1 = Math.hypot(u1x, u1y);
-    const ul2 = Math.hypot(u2x, u2y);
-    const cos2 =
-      ul1 > 1e-4 && ul2 > 1e-4
-        ? Math.max(-1, Math.min(1, (u1x * u2x + u1y * u2y) / (ul1 * ul2)))
-        : cos1;
-    const ang2 = Math.acos(cos2);
-
-    // Exige consistência entre escala curta e longa para não disparar em micro-ondulações de 1px!
     const combinedAngle = Math.min(ang1, ang2 * 1.12);
-    if (combinedAngle >= radThresh) {
-      scores[i] = combinedAngle;
+    if (combinedAngle < radThresh) continue;
+
+    // Teste de Concentração de Curvatura:
+    // Em um arco circular suave (ex: R = 4px), a taxa de giro é constante em s0 - winShort, s0 e s0 + winShort!
+    // Só rejeita como curva suave se AMBOS os braços girarem no mesmo sentido com magnitude uniforme (> 58% do giro central)
+    // e o giro local não for agudo extremo (< 76°).
+    if (ang1 < (76 * Math.PI) / 180 && totalLen >= winShort * 5) {
+      const prevTurn = computeSignedTurnAngleAtArc(
+        pts,
+        arc,
+        s0 - winShort * 1.05,
+        winShort,
+        isClosed
+      );
+      const nextTurn = computeSignedTurnAngleAtArc(
+        pts,
+        arc,
+        s0 + winShort * 1.05,
+        winShort,
+        isClosed
+      );
+      const sameSignPrev = prevTurn * signedAng1 > 0;
+      const sameSignNext = nextTurn * signedAng1 > 0;
+      if (
+        sameSignPrev &&
+        sameSignNext &&
+        Math.abs(prevTurn) >= ang1 * 0.58 &&
+        Math.abs(nextTurn) >= ang1 * 0.58
+      ) {
+        // Curvatura uniformemente distribuída -> arco suave contínuo, NÃO canto C⁰!
+        continue;
+      }
     }
+
+    scores[i] = combinedAngle;
   }
 
-  // Supressão de não-máximos em janela de comprimento de arco de 2.5px
+  // Supressão de não-máximos em janela de comprimento de arco de 2.8px
   const corners: number[] = [];
   if (!isClosed) corners.push(0);
 
@@ -398,7 +535,7 @@ export function detectTrueCornerIndices(
     const sc = scores[i];
     if (sc <= 0) continue;
     let isLocalMax = true;
-    for (let d = -3; d <= 3; d++) {
+    for (let d = -4; d <= 4; d++) {
       if (d === 0) continue;
       let j = i + d;
       if (isClosed) {
@@ -406,14 +543,35 @@ export function detectTrueCornerIndices(
       } else if (j <= 0 || j >= n - 1) {
         continue;
       }
-      if (Math.abs(arc[i] - arc[j]) <= 2.6 && scores[j] > sc) {
+      const arcDist = isClosed
+        ? Math.min(
+            Math.abs(arc[i] - arc[j]),
+            totalLen - Math.abs(arc[i] - arc[j])
+          )
+        : Math.abs(arc[i] - arc[j]);
+      if (arcDist <= 2.8 && scores[j] > sc) {
         isLocalMax = false;
         break;
       }
     }
     if (isLocalMax) {
-      if (corners.length === 0 || Math.abs(arc[i] - arc[corners[corners.length - 1]]) > 2.0) {
+      if (corners.length === 0) {
         corners.push(i);
+      } else {
+        const lastIdx = corners[corners.length - 1];
+        const prevDist = Math.abs(arc[i] - arc[lastIdx]);
+        if (prevDist > 2.2) {
+          if (isClosed && corners.length >= 1) {
+            const wrapDist = totalLen - Math.abs(arc[i] - arc[corners[0]]);
+            if (wrapDist <= 2.2) {
+              if (sc > scores[corners[0]]) {
+                corners[0] = i;
+              }
+              continue;
+            }
+          }
+          corners.push(i);
+        }
       }
     }
   }
@@ -487,27 +645,54 @@ function normalizeVec(vx: number, vy: number): Point2D {
   return { x: vx / len, y: vy / len };
 }
 
+/**
+ * Estima tangente de extremidade por regressão ponderada em janela adaptativa de arco (até 6 pontos),
+ * eliminando o erro angular de quantização de grade de 3 pixels em curvas longas e diagonais!
+ */
 function estimateEndTangent(pts: Point2D[], atStart: boolean): Point2D {
   const n = pts.length;
+  if (n <= 2) {
+    return atStart
+      ? normalizeVec(pts[n - 1].x - pts[0].x, pts[n - 1].y - pts[0].y)
+      : normalizeVec(pts[0].x - pts[n - 1].x, pts[0].y - pts[n - 1].y);
+  }
+
+  const maxK = Math.min(n - 1, 6);
   if (atStart) {
-    const k = Math.min(n - 1, 3);
     let vx = 0;
     let vy = 0;
-    for (let i = 1; i <= k; i++) {
-      const w = k - i + 1;
-      vx += (pts[i].x - pts[0].x) * w;
-      vy += (pts[i].y - pts[0].y) * w;
+    let accLen = 0;
+    for (let i = 1; i <= maxK; i++) {
+      accLen += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+      if (i > 2 && accLen > 6.5) break;
+      const dx = pts[i].x - pts[0].x;
+      const dy = pts[i].y - pts[0].y;
+      const d = Math.hypot(dx, dy);
+      if (d < 1e-6) continue;
+      // Peso gaussiano decrescente que estabiliza direção sem perder curvatura inicial
+      const w = Math.exp(-0.12 * accLen * accLen * 0.25);
+      vx += (dx / d) * w;
+      vy += (dy / d) * w;
     }
     return normalizeVec(vx, vy);
   } else {
     const last = n - 1;
-    const k = Math.min(last, 3);
     let vx = 0;
     let vy = 0;
-    for (let i = 1; i <= k; i++) {
-      const w = k - i + 1;
-      vx += (pts[last - i].x - pts[last].x) * w;
-      vy += (pts[last - i].y - pts[last].y) * w;
+    let accLen = 0;
+    for (let i = 1; i <= maxK; i++) {
+      accLen += Math.hypot(
+        pts[last - i].x - pts[last - i + 1].x,
+        pts[last - i].y - pts[last - i + 1].y
+      );
+      if (i > 2 && accLen > 6.5) break;
+      const dx = pts[last - i].x - pts[last].x;
+      const dy = pts[last - i].y - pts[last].y;
+      const d = Math.hypot(dx, dy);
+      if (d < 1e-6) continue;
+      const w = Math.exp(-0.12 * accLen * accLen * 0.25);
+      vx += (dx / d) * w;
+      vy += (dy / d) * w;
     }
     return normalizeVec(vx, vy);
   }
@@ -522,7 +707,9 @@ function fitSingleCubicLeastSquares(
   const n = pts.length;
   const p0 = pts[0];
   const p3 = pts[n - 1];
-  const chord = Math.hypot(p3.x - p0.x, p3.y - p0.y);
+  const chordX = p3.x - p0.x;
+  const chordY = p3.y - p0.y;
+  const chord = Math.hypot(chordX, chordY);
 
   if (n === 2 || chord < 1e-5) {
     const dist = chord / 3;
@@ -571,15 +758,36 @@ function fitSingleCubicLeastSquares(
   let alphaL = Math.abs(detC0C1) > 1e-8 ? detXC1 / detC0C1 : 0;
   let alphaR = Math.abs(detC0C1) > 1e-8 ? detC0X / detC0C1 : 0;
 
-  // Proteção anti-autointerseção / anti-laço degenerado: alças positivas limitadas a 0.85 * corda!
-  const minHandle = chord * 0.04;
-  const maxHandle = Math.max(1.5, chord * 0.85);
-  if (alphaL < minHandle || alphaR < minHandle) {
-    alphaL = chord / 3;
-    alphaR = chord / 3;
+  const heuristic = chord / 3;
+  const minHandle = chord * 0.05;
+  const maxHandle = Math.max(1.2, chord * 0.78);
+
+  if (alphaL < minHandle && alphaR < minHandle) {
+    alphaL = heuristic;
+    alphaR = heuristic;
   } else {
-    alphaL = Math.min(maxHandle, alphaL);
-    alphaR = Math.min(maxHandle, alphaR);
+    if (alphaL < minHandle) alphaL = Math.min(maxHandle, Math.max(minHandle, heuristic * 0.75));
+    else alphaL = Math.min(maxHandle, alphaL);
+
+    if (alphaR < minHandle) alphaR = Math.min(maxHandle, Math.max(minHandle, heuristic * 0.75));
+    else alphaR = Math.min(maxHandle, alphaR);
+  }
+
+  // Proteção anti-laço / anti-auto-interseção quando ambas as tangentes apontam para o mesmo semiplano:
+  // Impede que as alças P0->P1 e P3->P2 se cruzem prematuramente gerando cúspide ou laço!
+  const crossT = tHat1.x * tHat2.y - tHat1.y * tHat2.x;
+  const cross1 = chordX * tHat1.y - chordY * tHat1.x;
+  const cross2 = chordX * tHat2.y - chordY * tHat2.x;
+  if (cross1 * cross2 < 0 && Math.abs(crossT) > 1e-4) {
+    // Interseção dos raios P0 + s1*tHat1 e P3 + s2*tHat2
+    const s1Intersect = (chordX * tHat2.y - chordY * tHat2.x) / crossT;
+    const s2Intersect = (chordX * tHat1.y - chordY * tHat1.x) / crossT;
+    if (s1Intersect > 0 && s2Intersect < 0) {
+      const limitL = s1Intersect * 0.88;
+      const limitR = -s2Intersect * 0.88;
+      if (alphaL > limitL && limitL >= minHandle) alphaL = limitL;
+      if (alphaR > limitR && limitR >= minHandle) alphaR = limitR;
+    }
   }
 
   return [
@@ -642,16 +850,14 @@ function computeMaxBezierError(
 
 function tryConvertCubicToExactQuadratic(
   bez: [Point2D, Point2D, Point2D, Point2D],
-  tolPx = 0.06
+  tolPx = 0.045
 ): FittedSegmentCommand {
   const [p0, p1, p2, p3] = bez;
-  // Uma Bézier quadrática Q(p0, q1, p3) elevada ao grau 3 possui p1 = (p0 + 2*q1)/3 e p2 = (p3 + 2*q1)/3
   const q1aX = 1.5 * p1.x - 0.5 * p0.x;
   const q1aY = 1.5 * p1.y - 0.5 * p0.y;
   const q1bX = 1.5 * p2.x - 0.5 * p3.x;
   const q1bY = 1.5 * p2.y - 0.5 * p3.y;
 
-  // Diferença máxima entre a cúbica e a quadrática média ocorre em 3/16 * ||q1a - q1b||
   const diff = (3 / 16) * Math.hypot(q1aX - q1bX, q1aY - q1bY);
   if (diff <= tolPx) {
     return {
@@ -672,6 +878,130 @@ function tryConvertCubicToExactQuadratic(
     x: p3.x,
     y: p3.y,
   };
+}
+
+/**
+ * Reconhece analiticamente arcos circulares parciais (`16° .. 330°`) passando exatamente
+ * por `pts[0]` e `pts[n-1]` (cantos arredondados `rx`, arcos tipográficos 'C', 'D', 'U', 'S', escudos, ícones),
+ * emitindo de 1 a 4 curvas Bézier cúbicas circulares exatas (`α = 4/3 * tan(Δθ/4)`), 100% livres de ondulações em qualquer zoom!
+ */
+function tryFitExactCircularArcSpan(
+  pts: Point2D[],
+  arcLengths: Float64Array,
+  maxTolPx: number
+): FittedSegmentCommand[] | null {
+  const n = pts.length;
+  if (n < 6) return null;
+  const totalArc = arcLengths[n - 1];
+  if (totalArc < 4.0) return null;
+
+  const p0 = pts[0];
+  const pEnd = pts[n - 1];
+  const dx = pEnd.x - p0.x;
+  const dy = pEnd.y - p0.y;
+  const chord = Math.hypot(dx, dy);
+  if (chord < 2.5) return null;
+
+  const pMid = samplePolylineAtArcLength(pts, arcLengths, totalArc * 0.5, false);
+  const mx = (p0.x + pEnd.x) * 0.5;
+  const my = (p0.y + pEnd.y) * 0.5;
+
+  // Normal unitária à corda P0 -> PEnd
+  const nx = -dy / chord;
+  const ny = dx / chord;
+
+  // Flecha assinada (sagitta) no ponto médio do arco
+  const sagitta = (pMid.x - mx) * nx + (pMid.y - my) * ny;
+  if (Math.abs(sagitta) < Math.max(0.45, maxTolPx * 1.6)) {
+    return null;
+  }
+
+  const halfC = chord * 0.5;
+  // Raio exato do círculo que passa por P0, PEnd e tem flecha `sagitta`: R = |s|/2 + c²/(8|s|)
+  const absS = Math.abs(sagitta);
+  const radius = absS * 0.5 + (halfC * halfC) / (2 * absS);
+  if (radius < 1.2 || radius > 2400) return null;
+
+  // Centro na mediatriz exata de [P0, PEnd]: ||P0 - C|| === ||PEnd - C|| === radius!
+  const centerOffset = sagitta > 0 ? sagitta - radius : sagitta + radius;
+  const cx = mx + nx * centerOffset;
+  const cy = my + ny * centerOffset;
+
+  const ang0 = Math.atan2(p0.y - cy, p0.x - cx);
+  const angMid = Math.atan2(pMid.y - cy, pMid.x - cx);
+  const angEnd = Math.atan2(pEnd.y - cy, pEnd.x - cx);
+
+  const normDelta = (a: number): number => {
+    let d = a;
+    while (d <= -Math.PI) d += Math.PI * 2;
+    while (d > Math.PI) d -= Math.PI * 2;
+    return d;
+  };
+
+  const dMid = normDelta(angMid - ang0);
+  if (Math.abs(dMid) < 0.06) return null;
+  const ccwSign = dMid > 0 ? 1 : -1;
+
+  let sweep = angEnd - ang0;
+  if (ccwSign > 0) {
+    while (sweep <= 0) sweep += Math.PI * 2;
+    while (sweep > Math.PI * 2) sweep -= Math.PI * 2;
+  } else {
+    while (sweep >= 0) sweep -= Math.PI * 2;
+    while (sweep < -Math.PI * 2) sweep += Math.PI * 2;
+  }
+
+  const absSweep = Math.abs(sweep);
+  if (absSweep < (16 * Math.PI) / 180 || absSweep > (335 * Math.PI) / 180) {
+    return null;
+  }
+
+  const radialTol = Math.min(0.24, Math.max(0.11, maxTolPx * 0.9));
+  let prevProg = 0;
+  for (let i = 1; i < n - 1; i++) {
+    const rx = pts[i].x - cx;
+    const ry = pts[i].y - cy;
+    const rDist = Math.hypot(rx, ry);
+    if (Math.abs(rDist - radius) > radialTol) {
+      return null;
+    }
+
+    let rel = Math.atan2(ry, rx) - ang0;
+    if (ccwSign > 0) {
+      while (rel < -0.05) rel += Math.PI * 2;
+    } else {
+      while (rel > 0.05) rel -= Math.PI * 2;
+    }
+    const prog = rel * ccwSign;
+    if (prog < prevProg - 0.08 || prog > absSweep + 0.08) {
+      return null;
+    }
+    if (prog > prevProg) prevProg = prog;
+  }
+
+  const numSegs = Math.max(1, Math.ceil(absSweep / (Math.PI * 0.5)));
+  const stepAngle = sweep / numSegs;
+  const alpha = (4 / 3) * Math.tan(stepAngle * 0.25) * radius;
+
+  const cmds: FittedSegmentCommand[] = [];
+  for (let k = 0; k < numSegs; k++) {
+    const aStart = ang0 + k * stepAngle;
+    const aEnd = k === numSegs - 1 ? angEnd : ang0 + (k + 1) * stepAngle;
+
+    const x0 = k === 0 ? p0.x : cx + radius * Math.cos(aStart);
+    const y0 = k === 0 ? p0.y : cy + radius * Math.sin(aStart);
+    const x3 = k === numSegs - 1 ? pEnd.x : cx + radius * Math.cos(aEnd);
+    const y3 = k === numSegs - 1 ? pEnd.y : cy + radius * Math.sin(aEnd);
+
+    const x1 = x0 - alpha * Math.sin(aStart);
+    const y1 = y0 + alpha * Math.cos(aStart);
+    const x2 = x3 + alpha * Math.sin(aEnd);
+    const y2 = y3 - alpha * Math.cos(aEnd);
+
+    cmds.push({ kind: 'C', x1, y1, x2, y2, x: x3, y: y3 });
+  }
+
+  return cmds;
 }
 
 function fitSmoothSpanRecursive(
@@ -695,9 +1025,9 @@ function fitSmoothSpanRecursive(
     return;
   }
 
-  // Teste matemático de colinearidade: se todos os pontos estão a <= straightLineTolPx da reta P0->PLast,
-  // emite um segmento de reta puro `L` (uma linha reta permanece 100% reta!).
-  if (depth === 0 && chord >= 2.2) {
+  // 1) Teste matemático de colinearidade: se todos os pontos estão a <= straightLineTolPx da reta P0->PLast,
+  // emite um segmento de reta puro `L` (uma linha reta permanece 100% reta em qualquer zoom!).
+  if (depth === 0 && chord >= 2.0) {
     let maxOrtho = 0;
     const invChord = 1 / chord;
     for (let i = 1; i < n - 1; i++) {
@@ -719,6 +1049,16 @@ function fitSmoothSpanRecursive(
 
   const arc = computeCumulativeArcLengths(pts);
   const totalLen = Math.max(1e-6, arc[n - 1]);
+
+  // 2) Reconhecimento analítico de arco circular exato no trecho livre de cantos
+  if (depth === 0 && n >= 6) {
+    const arcCmds = tryFitExactCircularArcSpan(pts, arc, Math.sqrt(maxErrorSq));
+    if (arcCmds) {
+      for (const c of arcCmds) out.push(c);
+      return;
+    }
+  }
+
   let u: Float64Array = new Float64Array(n);
   for (let i = 0; i < n; i++) {
     u[i] = arc[i] / totalLen;
@@ -732,9 +1072,9 @@ function fitSmoothSpanRecursive(
     return;
   }
 
-  // Refinamento Newton-Raphson quando o erro está próximo do limiar
-  if (maxDistSq <= maxErrorSq * 9) {
-    for (let iter = 0; iter < 4; iter++) {
+  // Refinamento Newton-Raphson iterativo (até 5 iterações para convergir em curvas amplas com 1 único segmento!)
+  if (maxDistSq <= maxErrorSq * 14) {
+    for (let iter = 0; iter < 5; iter++) {
       u = reparameterizeNewtonRaphson(pts, u, bez);
       bez = fitSingleCubicLeastSquares(pts, u, tHat1, tHat2);
       const res = computeMaxBezierError(pts, u, bez);
@@ -747,15 +1087,17 @@ function fitSmoothSpanRecursive(
     }
   }
 
-  if (depth >= 9 || splitIdx <= 0 || splitIdx >= n - 1) {
+  if (depth >= 8 || splitIdx <= 0 || splitIdx >= n - 1) {
     out.push(tryConvertCubicToExactQuadratic(bez));
     return;
   }
 
-  // Tangente unitária central compartilhada garante continuidade tangencial G¹ perfeita no ponto de divisão!
-  const prevIdx = Math.max(0, splitIdx - 2);
-  const nextIdx = Math.min(n - 1, splitIdx + 2);
-  const centerDir = normalizeVec(pts[nextIdx].x - pts[prevIdx].x, pts[nextIdx].y - pts[prevIdx].y);
+  // Tangente central contínua por comprimento de arco simétrico (garante G¹ suave sem quina de discretização!)
+  const sSplit = arc[splitIdx];
+  const tanWin = Math.min(3.6, Math.max(1.5, totalLen * 0.18));
+  const pBack = samplePolylineAtArcLength(pts, arc, sSplit - tanWin, false);
+  const pFwd = samplePolylineAtArcLength(pts, arc, sSplit + tanWin, false);
+  const centerDir = normalizeVec(pFwd.x - pBack.x, pFwd.y - pBack.y);
   const tCenterLeft = { x: -centerDir.x, y: -centerDir.y };
   const tCenterRight = { x: centerDir.x, y: centerDir.y };
 
@@ -781,8 +1123,8 @@ function fitSmoothSpanRecursive(
 
 /**
  * Reconstrói uma polilinha sub-pixel (aberta entre duas junções topológicas ou laço fechado)
- * preservando cantos agudos (`C⁰`), segmentos retos exatos (`L`), arcos parabólicos (`Q`)
- * e curvas cúbicas suaves (`C`) com continuidade tangencial `G¹`.
+ * preservando cantos agudos (`C⁰`), segmentos retos exatos (`L`), arcos circulares/elípticos
+ * analíticos e curvas cúbicas suaves (`C`/`Q`) com continuidade tangencial `G¹` e estabilidade em qualquer zoom.
  */
 export function fitAdaptiveBezierChain(
   baseGridPoints: Point2D[],
@@ -790,8 +1132,8 @@ export function fitAdaptiveBezierChain(
   isClosedLoop: boolean,
   options: AdaptiveCurveFitOptions = {}
 ): FittedBezierChain {
-  const maxErr = options.maxCurveErrorPx ?? 0.24;
-  const straightTol = options.straightLineTolPx ?? 0.24;
+  const maxErr = options.maxCurveErrorPx ?? 0.22;
+  const straightTol = options.straightLineTolPx ?? 0.22;
   const cornerDeg = options.cornerAngleThresholdDeg ?? 36;
   const tubeRadius = options.subpixelTubeRadiusPx ?? 0.48;
 
@@ -807,9 +1149,9 @@ export function fitAdaptiveBezierChain(
     return { start: p, end: p, commands: [] };
   }
 
-  // Teste de círculo/elipse analítica exata para laços fechados isolados (olhos, estrelas de 1–4px, pontos, anéis, sombras!)
+  // Teste de círculo/elipse analítica exata (incluindo elipses inclinadas via momentos de Green!)
   if (isClosedLoop && regPts.length >= 5) {
-    const ellipseCommands = tryFitClosedAnalyticalEllipse(regPts, maxErr * 1.35);
+    const ellipseCommands = tryFitClosedAnalyticalEllipse(regPts, maxErr * 1.3);
     if (ellipseCommands) {
       return ellipseCommands;
     }
@@ -820,12 +1162,13 @@ export function fitAdaptiveBezierChain(
   const commands: FittedSegmentCommand[] = [];
 
   if (!isClosedLoop) {
-    // Salvaguarda: se início e fim coincidem (ex.: laço tocando apenas 1 vértice de sela) e não há cantos intermediários,
-    // insere o ponto mais distante da âncora inicial para impedir corda nula!
     if (
       corners.length === 2 &&
       regPts.length >= 4 &&
-      Math.hypot(regPts[regPts.length - 1].x - regPts[0].x, regPts[regPts.length - 1].y - regPts[0].y) < 1.2
+      Math.hypot(
+        regPts[regPts.length - 1].x - regPts[0].x,
+        regPts[regPts.length - 1].y - regPts[0].y
+      ) < 1.2
     ) {
       let farIdx = Math.floor(regPts.length / 2);
       let maxD = -1;
@@ -856,8 +1199,7 @@ export function fitAdaptiveBezierChain(
     };
   }
 
-  // Laço fechado: se não há cantos agudos reais (apenas o ponto inicial de referência),
-  // impõe tangente contínua G¹ também através da emenda `corners[0]`!
+  // Laço fechado sem cantos agudos reais: impõe continuidade tangencial G¹ perfeita através da costura!
   const limit = regPts.length - 1;
   if (corners.length === 1) {
     const c0 = corners[0];
@@ -867,16 +1209,29 @@ export function fitAdaptiveBezierChain(
     }
     rotated.push({ ...rotated[0] });
 
-    // Tangente suave na costura do laço fechado
-    const prevSeam = rotated[rotated.length - 3];
-    const nextSeam = rotated[2];
-    const seamDir = normalizeVec(nextSeam.x - prevSeam.x, nextSeam.y - prevSeam.y);
+    const rotArc = computeCumulativeArcLengths(rotated);
+    const rotLen = rotArc[rotated.length - 1];
+    const seamWin = Math.min(3.8, Math.max(1.5, rotLen * 0.14));
 
-    // Divide em duas metades suaves para evitar que p0 === p3 colapse a corda em zero!
-    const mid = Math.floor(rotated.length / 2);
-    const prevMid = rotated[Math.max(0, mid - 2)];
-    const nextMid = rotated[Math.min(rotated.length - 1, mid + 2)];
-    const midDir = normalizeVec(nextMid.x - prevMid.x, nextMid.y - prevMid.y);
+    const pBeforeSeam = samplePolylineAtArcLength(rotated, rotArc, rotLen - seamWin, true);
+    const pAfterSeam = samplePolylineAtArcLength(rotated, rotArc, seamWin, true);
+    const seamDir = normalizeVec(pAfterSeam.x - pBeforeSeam.x, pAfterSeam.y - pBeforeSeam.y);
+
+    // Encontra o vértice próximo à metade do perímetro real (arc-length) para divisão equilibrada
+    let mid = Math.floor(rotated.length / 2);
+    const halfLen = rotLen * 0.5;
+    let bestMidDiff = Infinity;
+    for (let i = 1; i < rotated.length - 1; i++) {
+      const diff = Math.abs(rotArc[i] - halfLen);
+      if (diff < bestMidDiff) {
+        bestMidDiff = diff;
+        mid = i;
+      }
+    }
+
+    const pBeforeMid = samplePolylineAtArcLength(rotated, rotArc, rotArc[mid] - seamWin, true);
+    const pAfterMid = samplePolylineAtArcLength(rotated, rotArc, rotArc[mid] + seamWin, true);
+    const midDir = normalizeVec(pAfterMid.x - pBeforeMid.x, pAfterMid.y - pBeforeMid.y);
 
     fitSmoothSpanRecursive(
       rotated.slice(0, mid + 1),
@@ -931,6 +1286,10 @@ export function fitAdaptiveBezierChain(
   };
 }
 
+/**
+ * Reconhece analiticamente círculos e elipses fechadas (alinhadas aos eixos OU inclinadas!)
+ * usando momentos geométricos de área de 2ª ordem pelo Teorema de Green (invariantes à densidade de vértices).
+ */
 function tryFitClosedAnalyticalEllipse(
   pts: Point2D[],
   maxTolPx: number
@@ -940,6 +1299,9 @@ function tryFitClosedAnalyticalEllipse(
 
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   let signedArea2 = 0;
+  let cxSum = 0;
+  let cySum = 0;
+
   for (let i = 0; i < n; i++) {
     const p = pts[i];
     const q = pts[i + 1];
@@ -947,69 +1309,159 @@ function tryFitClosedAnalyticalEllipse(
     if (p.x > maxX) maxX = p.x;
     if (p.y < minY) minY = p.y;
     if (p.y > maxY) maxY = p.y;
-    signedArea2 += p.x * q.y - q.x * p.y;
+    const cross = p.x * q.y - q.x * p.y;
+    signedArea2 += cross;
+    cxSum += (p.x + q.x) * cross;
+    cySum += (p.y + q.y) * cross;
   }
-
-  const cx = (minX + maxX) * 0.5;
-  const cy = (minY + maxY) * 0.5;
-  let rx = (maxX - minX) * 0.5;
-  let ry = (maxY - minY) * 0.5;
-  if (rx < 0.42 || ry < 0.42) return null;
 
   const polyArea = Math.abs(signedArea2) * 0.5;
-  // Para micro-pontos/estrelas (n <= 12, diâmetro <= 3px), conserva a área fotométrica exata (π·rx·ry = polyArea)!
-  if (n <= 12 && rx <= 2.2 && ry <= 2.2 && Math.abs(rx - ry) <= 0.65) {
-    const areaScale = Math.sqrt(polyArea / Math.max(0.2, Math.PI * rx * ry));
-    rx *= Math.max(0.92, Math.min(1.22, areaScale));
-    ry *= Math.max(0.92, Math.min(1.22, areaScale));
-  } else {
-    const ellipseArea = Math.PI * rx * ry;
-    const ratio = polyArea / Math.max(0.5, ellipseArea);
-    if (ratio < 0.87 || ratio > 1.13) return null;
+  if (polyArea < 0.35) return null;
+
+  const cx = Math.abs(signedArea2) > 1e-6 ? cxSum / (3 * signedArea2) : (minX + maxX) * 0.5;
+  const cy = Math.abs(signedArea2) > 1e-6 ? cySum / (3 * signedArea2) : (minY + maxY) * 0.5;
+
+  const bboxRx = (maxX - minX) * 0.5;
+  const bboxRy = (maxY - minY) * 0.5;
+  if (bboxRx < 0.42 || bboxRy < 0.42) return null;
+
+  // Para micro-pontos/estrelas (n <= 12, raio <= 2.2px), conserva área fotométrica exata em elipse alinhada
+  if (n <= 12 && bboxRx <= 2.2 && bboxRy <= 2.2 && Math.abs(bboxRx - bboxRy) <= 0.65) {
+    const areaScale = Math.sqrt(polyArea / Math.max(0.2, Math.PI * bboxRx * bboxRy));
+    const rx = bboxRx * Math.max(0.92, Math.min(1.22, areaScale));
+    const ry = bboxRy * Math.max(0.92, Math.min(1.22, areaScale));
+    return buildRotatedEllipseBezierChain(cx, cy, rx, ry, 0, signedArea2 > 0);
   }
 
-  // Verifica desvio radial máximo de todos os pontos do contorno até a elipse analítica
+  // Momentos centrais de área de 2ª ordem pelo Teorema de Green
+  let ixx = 0;
+  let iyy = 0;
+  let ixy = 0;
+  for (let i = 0; i < n; i++) {
+    const x0 = pts[i].x - cx;
+    const y0 = pts[i].y - cy;
+    const x1 = pts[i + 1].x - cx;
+    const y1 = pts[i + 1].y - cy;
+    const cross = x0 * y1 - x1 * y0;
+    ixx += (x0 * x0 + x0 * x1 + x1 * x1) * cross;
+    iyy += (y0 * y0 + y0 * y1 + y1 * y1) * cross;
+    ixy += (x0 * y1 + 2 * x0 * y0 + 2 * x1 * y1 + x1 * y0) * cross;
+  }
+  const sgn = signedArea2 > 0 ? 1 : -1;
+  ixx = (ixx * sgn) / 12;
+  iyy = (iyy * sgn) / 12;
+  ixy = (ixy * sgn) / 24;
+
+  const trace = ixx + iyy;
+  const diff = ixx - iyy;
+  const disc = Math.sqrt(Math.max(0, diff * diff + 4 * ixy * ixy));
+  const lambdaMax = (trace + disc) * 0.5;
+  const lambdaMin = (trace - disc) * 0.5;
+  if (lambdaMin <= 1e-4) return null;
+
+  let rx = 2 * Math.sqrt(lambdaMax / polyArea);
+  let ry = 2 * Math.sqrt(lambdaMin / polyArea);
+  let phi = 0.5 * Math.atan2(2 * ixy, diff);
+
+  // Se quase alinhada aos eixos ou quase circular, trava ângulo em 0° ou 90° para âncoras ortogonais limpas!
+  if (Math.abs(rx - ry) <= Math.max(0.15, rx * 0.03)) {
+    const rAvg = Math.sqrt(rx * ry);
+    rx = rAvg;
+    ry = rAvg;
+    phi = 0;
+  } else if (Math.abs(phi) < (2.5 * Math.PI) / 180) {
+    phi = 0;
+  } else if (Math.abs(Math.abs(phi) - Math.PI * 0.5) < (2.5 * Math.PI) / 180) {
+    const tmp = rx;
+    rx = ry;
+    ry = tmp;
+    phi = 0;
+  }
+
+  const cosP = Math.cos(phi);
+  const sinP = Math.sin(phi);
   const avgR = Math.sqrt(rx * ry);
   let maxRadialPx = 0;
+
   for (let i = 0; i < n; i++) {
-    const nx = (pts[i].x - cx) / rx;
-    const ny = (pts[i].y - cy) / ry;
-    const normR = Math.hypot(nx, ny);
+    const dx = pts[i].x - cx;
+    const dy = pts[i].y - cy;
+    const u = (dx * cosP + dy * sinP) / rx;
+    const v = (-dx * sinP + dy * cosP) / ry;
+    const normR = Math.hypot(u, v);
     const radialErr = Math.abs(normR - 1) * avgR;
     if (radialErr > maxRadialPx) maxRadialPx = radialErr;
   }
 
-  const allowedErr = rx <= 4 && ry <= 4 ? Math.max(0.52, maxTolPx * 1.6) : Math.max(0.38, maxTolPx * 1.35);
+  const allowedErr =
+    rx <= 4 && ry <= 4 ? Math.max(0.48, maxTolPx * 1.5) : Math.max(0.32, maxTolPx * 1.25);
   if (maxRadialPx > allowedErr) return null;
 
+  return buildRotatedEllipseBezierChain(cx, cy, rx, ry, phi, signedArea2 > 0);
+}
+
+function buildRotatedEllipseBezierChain(
+  cx: number,
+  cy: number,
+  rx: number,
+  ry: number,
+  phi: number,
+  isClockwiseInScreen: boolean
+): FittedBezierChain {
   const k = 0.55228475;
   const kx = rx * k;
   const ky = ry * k;
-  const isClockwiseInScreen = signedArea2 > 0;
+  const cosP = Math.cos(phi);
+  const sinP = Math.sin(phi);
 
-  const start: Point2D = { x: cx, y: cy - ry };
+  const rot = (ux: number, uy: number): Point2D => ({
+    x: cx + ux * cosP - uy * sinP,
+    y: cy + ux * sinP + uy * cosP,
+  });
+
+  const pTop = rot(0, -ry);
+  const pRight = rot(rx, 0);
+  const pBot = rot(0, ry);
+  const pLeft = rot(-rx, 0);
+
   if (isClockwiseInScreen) {
+    const c1a = rot(kx, -ry);
+    const c1b = rot(rx, -ky);
+    const c2a = rot(rx, ky);
+    const c2b = rot(kx, ry);
+    const c3a = rot(-kx, ry);
+    const c3b = rot(-rx, ky);
+    const c4a = rot(-rx, -ky);
+    const c4b = rot(-kx, -ry);
     return {
-      start,
-      end: start,
+      start: pTop,
+      end: pTop,
       commands: [
-        { kind: 'C', x1: cx + kx, y1: cy - ry, x2: cx + rx, y2: cy - ky, x: cx + rx, y: cy },
-        { kind: 'C', x1: cx + rx, y1: cy + ky, x2: cx + kx, y2: cy + ry, x: cx, y: cy + ry },
-        { kind: 'C', x1: cx - kx, y1: cy + ry, x2: cx - rx, y2: cy + ky, x: cx - rx, y: cy },
-        { kind: 'C', x1: cx - rx, y1: cy - ky, x2: cx - kx, y2: cy - ry, x: cx, y: cy - ry },
+        { kind: 'C', x1: c1a.x, y1: c1a.y, x2: c1b.x, y2: c1b.y, x: pRight.x, y: pRight.y },
+        { kind: 'C', x1: c2a.x, y1: c2a.y, x2: c2b.x, y2: c2b.y, x: pBot.x, y: pBot.y },
+        { kind: 'C', x1: c3a.x, y1: c3a.y, x2: c3b.x, y2: c3b.y, x: pLeft.x, y: pLeft.y },
+        { kind: 'C', x1: c4a.x, y1: c4a.y, x2: c4b.x, y2: c4b.y, x: pTop.x, y: pTop.y },
       ],
     };
   }
 
   // Sentido anti-horário (furo interno elíptico para fill-rule="evenodd"!)
+  const h1a = rot(-kx, -ry);
+  const h1b = rot(-rx, -ky);
+  const h2a = rot(-rx, ky);
+  const h2b = rot(-kx, ry);
+  const h3a = rot(kx, ry);
+  const h3b = rot(rx, ky);
+  const h4a = rot(rx, -ky);
+  const h4b = rot(kx, -ry);
   return {
-    start,
-    end: start,
+    start: pTop,
+    end: pTop,
     commands: [
-      { kind: 'C', x1: cx - kx, y1: cy - ry, x2: cx - rx, y2: cy - ky, x: cx - rx, y: cy },
-      { kind: 'C', x1: cx - rx, y1: cy + ky, x2: cx - kx, y2: cy + ry, x: cx, y: cy + ry },
-      { kind: 'C', x1: cx + kx, y1: cy + ry, x2: cx + rx, y2: cy + ky, x: cx + rx, y: cy },
-      { kind: 'C', x1: cx + rx, y1: cy - ky, x2: cx + kx, y2: cy - ry, x: cx, y: cy - ry },
+      { kind: 'C', x1: h1a.x, y1: h1a.y, x2: h1b.x, y2: h1b.y, x: pLeft.x, y: pLeft.y },
+      { kind: 'C', x1: h2a.x, y1: h2a.y, x2: h2b.x, y2: h2b.y, x: pBot.x, y: pBot.y },
+      { kind: 'C', x1: h3a.x, y1: h3a.y, x2: h3b.x, y2: h3b.y, x: pRight.x, y: pRight.y },
+      { kind: 'C', x1: h4a.x, y1: h4a.y, x2: h4b.x, y2: h4b.y, x: pTop.x, y: pTop.y },
     ],
   };
 }

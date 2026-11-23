@@ -6,21 +6,19 @@ import {
   tuckInternalChainUnderOpaqueNeighbor,
   type AdaptiveCurveFitOptions,
   type FittedBezierChain,
-  type Point2D,
 } from '../geometry/adaptiveBezierFitter';
 import {
-  unmixPerceptualBoundaryCoverage,
+  computeExactSubpixelEdgeNormalShift,
+  reconstructSubpixelChainTargets,
+  type CrackEdgeDescriptor,
+  type SubpixelEdgeInput,
+} from '../geometry/subpixelEdgeLocalizer';
+import {
+  oklabScaledToSrgb8,
   type PerceptualOklabBuffers,
 } from '../color/perceptualColor';
 
-interface CrackDirectedEdge {
-  fromVid: number;
-  toVid: number;
-  dir: 0 | 1 | 2 | 3; // 0=E, 1=S, 2=W, 3=N
-  insideLabel: number;
-  outsideLabel: number;
-  inPx: number;
-  outPx: number;
+interface CrackDirectedEdge extends CrackEdgeDescriptor {
   used: boolean;
 }
 
@@ -35,6 +33,8 @@ export interface RegionTopologyMetadata {
   zRank: number;
   isSemiTransparent: boolean;
   meanOklab: [number, number, number];
+  meanAlpha?: number;
+  hasThickInterior?: boolean;
 }
 
 export interface PlanarTopologyBuildInput {
@@ -45,7 +45,9 @@ export interface PlanarTopologyBuildInput {
   alphaBytes: Uint8Array;
   hasUniformBg: boolean;
   backgroundOklab: [number, number, number] | null;
+  backgroundRgb?: [number, number, number] | null;
   regionMeta: Map<number, RegionTopologyMetadata>;
+  regionBoundaryBiasPx?: Map<number, number>;
   curveOptions?: AdaptiveCurveFitOptions;
   enablePorterDuffSeamTuck?: boolean;
 }
@@ -81,9 +83,10 @@ function computeLoopSignedArea(edges: CrackDirectedEdge[], gridStride: number): 
  * Constrói o Grafo Topológico Planar Exato sobre a grade de pixels:
  * 1. Extrai arestas orientadas (half-edges) entre cada par de regiões adjacentes;
  * 2. Identifica junções topológicas (encontro de >= 3 regiões);
- * 3. Ajusta CADA fronteira compartilhada UMA ÚNICA VEZ em sub-pixel e reutiliza a curva Bézier
+ * 3. Localiza bordas sub-pixel locais em espaço de luz linear/sRGB sem viés de gama;
+ * 4. Ajusta CADA fronteira compartilhada UMA ÚNICA VEZ em sub-pixel e reutiliza a curva Bézier
  *    exata invertida na região vizinha (zero fendas, zero sobreposições indevidas, zero vazamentos);
- * 4. Preserva todos os espaços vazios/buracos reais (`fill-rule="evenodd"`).
+ * 5. Preserva todos os espaços vazios/buracos reais (`fill-rule="evenodd"`).
  */
 export function buildPlanarSharedTopology(
   input: PlanarTopologyBuildInput
@@ -96,7 +99,9 @@ export function buildPlanarSharedTopology(
     alphaBytes,
     hasUniformBg,
     backgroundOklab,
+    backgroundRgb,
     regionMeta,
+    regionBoundaryBiasPx,
     curveOptions = {},
     enablePorterDuffSeamTuck = true,
   } = input;
@@ -104,6 +109,35 @@ export function buildPlanarSharedTopology(
   const gridW = width + 1;
   const gridH = height + 1;
   const totalGridVerts = gridW * gridH;
+
+  const resolvedBgRgb: [number, number, number] | null =
+    backgroundRgb ??
+    (backgroundOklab
+      ? oklabScaledToSrgb8(backgroundOklab[0], backgroundOklab[1], backgroundOklab[2])
+      : null);
+
+  const regionMeanOklab = new Map<number, [number, number, number]>();
+  const regionMeanAlpha = new Map<number, number>();
+  for (const [rid, meta] of regionMeta.entries()) {
+    regionMeanOklab.set(rid, meta.meanOklab);
+    if (meta.meanAlpha !== undefined) {
+      regionMeanAlpha.set(rid, meta.meanAlpha);
+    }
+  }
+
+  const subpixelInput: SubpixelEdgeInput = {
+    width,
+    height,
+    labelMap,
+    oklab,
+    rgbaBytes: alphaBytes,
+    hasUniformBg,
+    backgroundOklab,
+    backgroundRgb: resolvedBgRgb,
+    regionMeanOklab,
+    regionMeanAlpha,
+    regionBoundaryBiasPx,
+  };
 
   const getLabel = (x: number, y: number): number => {
     if (x < 0 || x >= width || y < 0 || y >= height) return 0;
@@ -122,19 +156,144 @@ export function buildPlanarSharedTopology(
       const lSW = getLabel(vx - 1, vy);
       const lSE = getLabel(vx, vy);
 
-      // Conta quantos rótulos distintos aparecem nos 4 pixels incidentes (alocação zero!)
       let distinct = 1;
       if (lNE !== lNW) distinct++;
       if (lSW !== lNW && lSW !== lNE) distinct++;
       if (lSE !== lNW && lSE !== lNE && lSE !== lSW) distinct++;
 
-      // Também marca sela diagonal (A, B; B, A) como junção para consistência topológica
       const isDiagonalSaddle = lNW === lSE && lNE === lSW && lNW !== lNE;
 
       if (distinct >= 3 || isDiagonalSaddle) {
         isJunctionVertex[vy * gridW + vx] = 1;
         junctionVertexCount++;
       }
+    }
+  }
+
+  // 1B. Calcula posição sub-pixel globalmente única para cada vértice de junção (elimina degraus em T-junctions sobre círculos/contornos!)
+  const junctionSubpixelCoords = new Map<number, { x: number; y: number }>();
+  subpixelInput.junctionSubpixelCoords = junctionSubpixelCoords;
+
+  const measureHorizCrackDy = (cx: number, cy: number): number | null => {
+    if (cx < 0 || cx >= width) return null;
+    const lUp = getLabel(cx, cy - 1);
+    const lDn = getLabel(cx, cy);
+    if (lUp === lDn) return null;
+    const upPx = cy - 1 >= 0 && cy - 1 < height ? (cy - 1) * width + cx : -1;
+    const dnPx = cy >= 0 && cy < height ? cy * width + cx : -1;
+    if (lDn > 0 && dnPx >= 0) {
+      const s = computeExactSubpixelEdgeNormalShift(
+        {
+          fromVid: cy * gridW + cx,
+          toVid: cy * gridW + cx + 1,
+          dir: 0,
+          insideLabel: lDn,
+          outsideLabel: lUp,
+          inPx: dnPx,
+          outPx: upPx,
+        },
+        subpixelInput
+      );
+      return -s; // dir=0 tem normal externa (0, -1)
+    }
+    if (lUp > 0 && upPx >= 0) {
+      const s = computeExactSubpixelEdgeNormalShift(
+        {
+          fromVid: cy * gridW + cx + 1,
+          toVid: cy * gridW + cx,
+          dir: 2,
+          insideLabel: lUp,
+          outsideLabel: lDn,
+          inPx: upPx,
+          outPx: dnPx,
+        },
+        subpixelInput
+      );
+      return s; // dir=2 tem normal externa (0, +1)
+    }
+    return null;
+  };
+
+  const measureVertCrackDx = (cx: number, cy: number): number | null => {
+    if (cy < 0 || cy >= height) return null;
+    const lLt = getLabel(cx - 1, cy);
+    const lRt = getLabel(cx, cy);
+    if (lLt === lRt) return null;
+    const ltPx = cx - 1 >= 0 && cx - 1 < width ? cy * width + (cx - 1) : -1;
+    const rtPx = cx >= 0 && cx < width ? cy * width + cx : -1;
+    if (lLt > 0 && ltPx >= 0) {
+      const s = computeExactSubpixelEdgeNormalShift(
+        {
+          fromVid: cy * gridW + cx,
+          toVid: (cy + 1) * gridW + cx,
+          dir: 1,
+          insideLabel: lLt,
+          outsideLabel: lRt,
+          inPx: ltPx,
+          outPx: rtPx,
+        },
+        subpixelInput
+      );
+      return s; // dir=1 tem normal externa (+1, 0)
+    }
+    if (lRt > 0 && rtPx >= 0) {
+      const s = computeExactSubpixelEdgeNormalShift(
+        {
+          fromVid: (cy + 1) * gridW + cx,
+          toVid: cy * gridW + cx,
+          dir: 3,
+          insideLabel: lRt,
+          outsideLabel: lLt,
+          inPx: rtPx,
+          outPx: ltPx,
+        },
+        subpixelInput
+      );
+      return -s; // dir=3 tem normal externa (-1, 0)
+    }
+    return null;
+  };
+
+  for (let vy = 0; vy <= height; vy++) {
+    for (let vx = 0; vx <= width; vx++) {
+      const vid = vy * gridW + vx;
+      if (!isJunctionVertex[vid]) continue;
+      // Mantém bordas extremas do canvas cravadas exatamente no limite do viewBox
+      if (vx === 0 || vx === width || vy === 0 || vy === height) {
+        junctionSubpixelCoords.set(vid, { x: vx, y: vy });
+        continue;
+      }
+
+      const dyW = measureHorizCrackDy(vx - 1, vy);
+      const dyE = measureHorizCrackDy(vx, vy);
+      const dxN = measureVertCrackDx(vx, vy - 1);
+      const dxS = measureVertCrackDx(vx, vy);
+
+      let dx = 0;
+      let dxCnt = 0;
+      if (dxN !== null) {
+        dx += dxN;
+        dxCnt++;
+      }
+      if (dxS !== null) {
+        dx += dxS;
+        dxCnt++;
+      }
+
+      let dy = 0;
+      let dyCnt = 0;
+      if (dyW !== null) {
+        dy += dyW;
+        dyCnt++;
+      }
+      if (dyE !== null) {
+        dy += dyE;
+        dyCnt++;
+      }
+
+      const finalDx = dxCnt > 0 ? Math.max(-0.42, Math.min(0.42, dx / dxCnt)) : 0;
+      const finalDy = dyCnt > 0 ? Math.max(-0.42, Math.min(0.42, dy / dyCnt)) : 0;
+      junctionSubpixelCoords.set(vid, { x: vx + finalDx, y: vy + finalDy });
     }
   }
 
@@ -156,7 +315,6 @@ export function buildPlanarSharedTopology(
       if (inside <= 0) continue;
       const inPx = rowOff + x;
 
-      // Topo: (x, y) -> (x+1, y) [Leste = 0]
       const upLbl = getLabel(x, y - 1);
       if (upLbl !== inside) {
         pushEdge({
@@ -171,7 +329,6 @@ export function buildPlanarSharedTopology(
         });
       }
 
-      // Direita: (x+1, y) -> (x+1, y+1) [Sul = 1]
       const rightLbl = getLabel(x + 1, y);
       if (rightLbl !== inside) {
         pushEdge({
@@ -186,7 +343,6 @@ export function buildPlanarSharedTopology(
         });
       }
 
-      // Base: (x+1, y+1) -> (x, y+1) [Oeste = 2]
       const downLbl = getLabel(x, y + 1);
       if (downLbl !== inside) {
         pushEdge({
@@ -201,7 +357,6 @@ export function buildPlanarSharedTopology(
         });
       }
 
-      // Esquerda: (x, y+1) -> (x, y) [Norte = 3]
       const leftLbl = getLabel(x - 1, y);
       if (leftLbl !== inside) {
         pushEdge({
@@ -280,153 +435,20 @@ export function buildPlanarSharedTopology(
     loopsByRegion.set(regionId, regionLoops);
   }
 
-  // 4. Função auxiliar para estimar o deslocamento normal sub-pixel de anti-aliasing de uma aresta
-  const computeEdgeNormalSubpixelShift = (e: CrackDirectedEdge): number => {
-    const inMeta = regionMeta.get(e.insideLabel);
-    if (!inMeta) return 0;
-    const [fgL, fgA, fgB] = inMeta.meanOklab;
-
-    if (e.outsideLabel === 0) {
-      if (!hasUniformBg || !backgroundOklab) {
-        const aIn = alphaBytes[e.inPx * 4 + 3] / 255;
-        const aOut = e.outPx >= 0 ? alphaBytes[e.outPx * 4 + 3] / 255 : 0;
-        if (aIn < 0.97 || aOut > 0.03) {
-          return Math.max(-0.42, Math.min(0.42, (aIn + aOut - 1.0) * 0.42));
-        }
-        return 0;
-      }
-
-      const [bgL, bgA, bgB] = backgroundOklab;
-      const uIn = unmixPerceptualBoundaryCoverage(
-        oklab.L[e.inPx],
-        oklab.a[e.inPx],
-        oklab.b[e.inPx],
-        fgL,
-        fgA,
-        fgB,
-        bgL,
-        bgA,
-        bgB
-      );
-      const covIn = uIn.orthogonalResidual <= 6.5 ? uIn.coverage : 1.0;
-
-      let covOut = 0.0;
-      if (e.outPx >= 0) {
-        const uOut = unmixPerceptualBoundaryCoverage(
-          oklab.L[e.outPx],
-          oklab.a[e.outPx],
-          oklab.b[e.outPx],
-          fgL,
-          fgA,
-          fgB,
-          bgL,
-          bgA,
-          bgB
-        );
-        if (uOut.orthogonalResidual <= 6.5) {
-          covOut = uOut.coverage;
-        }
-      }
-
-      return Math.max(-0.44, Math.min(0.44, (covIn + covOut - 1.0) * 0.44));
-    }
-
-    // Costura interna entre duas regiões `insideLabel` e `outsideLabel`
-    const outMeta = regionMeta.get(e.outsideLabel);
-    if (!outMeta || e.outPx < 0) return 0;
-    const [oL, oA, oB] = outMeta.meanOklab;
-    const uIn = unmixPerceptualBoundaryCoverage(
-      oklab.L[e.inPx],
-      oklab.a[e.inPx],
-      oklab.b[e.inPx],
-      fgL,
-      fgA,
-      fgB,
-      oL,
-      oA,
-      oB
-    );
-    const uOut = unmixPerceptualBoundaryCoverage(
-      oklab.L[e.outPx],
-      oklab.a[e.outPx],
-      oklab.b[e.outPx],
-      fgL,
-      fgA,
-      fgB,
-      oL,
-      oA,
-      oB
-    );
-    if (uIn.orthogonalResidual > 7.5 && uOut.orthogonalResidual > 7.5) return 0;
-    return Math.max(-0.4, Math.min(0.4, (uIn.coverage + uOut.coverage - 1.0) * 0.4));
-  };
-
-  // Normal apontando de `inside` para `outside` para cada dir (0=E -> normal N=(0,-1), 1=S -> E=(1,0), 2=W -> S=(0,1), 3=N -> W=(-1,0))
-  const DIR_OUT_NX = [0, 1, 0, -1] as const;
-  const DIR_OUT_NY = [-1, 0, 1, 0] as const;
-
-  const buildChainPointsWithSubpixelTargets = (
-    chainEdges: CrackDirectedEdge[],
-    isClosed: boolean
-  ): { basePts: Point2D[]; targetPts: Point2D[] } => {
-    const m = chainEdges.length;
-    const basePts: Point2D[] = new Array(m + 1);
-    const targetPts: Point2D[] = new Array(m + 1);
-    const shifts = new Float32Array(m);
-
-    for (let i = 0; i < m; i++) {
-      const e = chainEdges[i];
-      const vx = e.fromVid % gridW;
-      const vy = (e.fromVid - vx) / gridW;
-      basePts[i] = { x: vx, y: vy };
-      shifts[i] = computeEdgeNormalSubpixelShift(e);
-    }
-
-    const lastTo = chainEdges[m - 1].toVid;
-    const endVx = lastTo % gridW;
-    const endVy = (lastTo - endVx) / gridW;
-    basePts[m] = { x: endVx, y: endVy };
-
-    for (let i = 0; i <= m; i++) {
-      if (!isClosed && (i === 0 || i === m)) {
-        // Vértice de junção compartilhado entre >= 3 regiões: posição exata travada!
-        targetPts[i] = { ...basePts[i] };
-        continue;
-      }
-
-      const prevEdgeIdx = i === 0 ? m - 1 : i - 1;
-      const nextEdgeIdx = i === m ? 0 : i;
-      const ePrev = chainEdges[prevEdgeIdx];
-      const eNext = chainEdges[nextEdgeIdx];
-      const sPrev = shifts[prevEdgeIdx];
-      const sNext = shifts[nextEdgeIdx];
-
-      const dx = (DIR_OUT_NX[ePrev.dir] * sPrev + DIR_OUT_NX[eNext.dir] * sNext) * 0.5;
-      const dy = (DIR_OUT_NY[ePrev.dir] * sPrev + DIR_OUT_NY[eNext.dir] * sNext) * 0.5;
-
-      targetPts[i] = {
-        x: basePts[i].x + dx,
-        y: basePts[i].y + dy,
-      };
-    }
-
-    if (isClosed) {
-      targetPts[m] = { ...targetPts[0] };
-    }
-
-    return { basePts, targetPts };
-  };
-
-  // 5. Cache Canônico de Cadeias Compartilhadas (garante que (A,B) e (B,A) compartilhem a EXATA MESMA curva Bézier!)
+  // 4. Cache Canônico de Cadeias Compartilhadas (garante que (A,B) e (B,A) compartilhem a EXATA MESMA curva Bézier!)
   const canonicalChainCache = new Map<string, FittedBezierChain>();
 
   const fitOrReuseSharedOpenChain = (chainEdges: CrackDirectedEdge[]): FittedBezierChain => {
     const inside = chainEdges[0].insideLabel;
     const outside = chainEdges[0].outsideLabel;
 
-    // Fronteira com o fundo externo (0) só pertence a `inside`: ajusta diretamente
     if (outside === 0) {
-      const { basePts, targetPts } = buildChainPointsWithSubpixelTargets(chainEdges, false);
+      const { basePts, targetPts } = reconstructSubpixelChainTargets(
+        chainEdges,
+        gridW,
+        false,
+        subpixelInput
+      );
       return fitAdaptiveBezierChain(basePts, targetPts, false, curveOptions);
     }
 
@@ -443,27 +465,32 @@ export function buildPlanarSharedTopology(
 
     let canonChain = canonicalChainCache.get(cacheKey);
     if (!canonChain) {
-      if (inside === rMin) {
-        const { basePts, targetPts } = buildChainPointsWithSubpixelTargets(chainEdges, false);
-        canonChain = fitAdaptiveBezierChain(basePts, targetPts, false, curveOptions);
-      } else {
-        // Ajusta e armazena na orientação canônica rMin -> rMax para simetria exata
-        const { basePts, targetPts } = buildChainPointsWithSubpixelTargets(chainEdges, false);
-        const fittedCurrent = fitAdaptiveBezierChain(basePts, targetPts, false, curveOptions);
-        canonChain = reverseFittedBezierChain(fittedCurrent);
-      }
+      const { basePts, targetPts } = reconstructSubpixelChainTargets(
+        chainEdges,
+        gridW,
+        false,
+        subpixelInput
+      );
+      const fittedCurrent = fitAdaptiveBezierChain(basePts, targetPts, false, curveOptions);
+      canonChain = inside === rMin ? fittedCurrent : reverseFittedBezierChain(fittedCurrent);
       canonicalChainCache.set(cacheKey, canonChain);
     }
 
     let oriented = inside === rMin ? canonChain : reverseFittedBezierChain(canonChain);
 
-    // Se `inside` está Z-abaixo de `outside` e `outside` é 100% opaco, aplica micro-encaixe invisível (0.28px)
-    // sob `outside` para eliminar qualquer fenda de anti-aliasing Porter-Duff nos renderizadores!
-    if (enablePorterDuffSeamTuck) {
+    // Micro-encaixe controlado (0.16px) APENAS sob regiões opacas com núcleo espesso (nunca sob contornos finos <= 2.5px!)
+    if (enablePorterDuffSeamTuck && chainEdges.length >= 3) {
       const inMeta = regionMeta.get(inside);
       const outMeta = regionMeta.get(outside);
-      if (inMeta && outMeta && inMeta.zRank < outMeta.zRank && !outMeta.isSemiTransparent) {
-        oriented = tuckInternalChainUnderOpaqueNeighbor(oriented, 0.28);
+      const outIsThick = outMeta?.hasThickInterior !== false;
+      if (
+        inMeta &&
+        outMeta &&
+        inMeta.zRank < outMeta.zRank &&
+        !outMeta.isSemiTransparent &&
+        outIsThick
+      ) {
+        oriented = tuckInternalChainUnderOpaqueNeighbor(oriented, 0.16);
       }
     }
 
@@ -474,7 +501,6 @@ export function buildPlanarSharedTopology(
     const inside = loopEdges[0].insideLabel;
     const outside = loopEdges[0].outsideLabel;
 
-    // Rotaciona o laço para iniciar deterministicamente no menor `fromVid` da grade!
     let minIdx = 0;
     let minVid = loopEdges[0].fromVid;
     for (let i = 1; i < loopEdges.length; i++) {
@@ -489,8 +515,12 @@ export function buildPlanarSharedTopology(
         : [...loopEdges.slice(minIdx), ...loopEdges.slice(0, minIdx)];
 
     if (outside === 0) {
-      const { basePts, targetPts } = buildChainPointsWithSubpixelTargets(orderedEdges, true);
-      // Garante ponto inicial/final regularizado coincidente
+      const { basePts, targetPts } = reconstructSubpixelChainTargets(
+        orderedEdges,
+        gridW,
+        true,
+        subpixelInput
+      );
       const reg = regularizeSubpixelChainPoints(
         basePts,
         targetPts,
@@ -506,7 +536,12 @@ export function buildPlanarSharedTopology(
 
     let canonClosed = canonicalChainCache.get(cacheKey);
     if (!canonClosed) {
-      const { basePts, targetPts } = buildChainPointsWithSubpixelTargets(orderedEdges, true);
+      const { basePts, targetPts } = reconstructSubpixelChainTargets(
+        orderedEdges,
+        gridW,
+        true,
+        subpixelInput
+      );
       const fitted = fitAdaptiveBezierChain(basePts, targetPts, true, curveOptions);
       canonClosed = inside === rMin ? fitted : reverseFittedBezierChain(fitted);
       canonicalChainCache.set(cacheKey, canonClosed);
@@ -515,9 +550,9 @@ export function buildPlanarSharedTopology(
     return inside === rMin ? canonClosed : reverseFittedBezierChain(canonClosed);
   };
 
-  // 6. Monta a geometria vetorial final `d` de cada região respeitando ilhas e furos reais!
+  // 5. Monta a geometria vetorial final `d` de cada região respeitando ilhas e furos reais!
   const geometriesByRegion = new Map<number, RegionVectorGeometry>();
-  const precision = curveOptions.precision ?? 2;
+  const precision = curveOptions.precision ?? 3;
 
   for (const [regionId, loops] of loopsByRegion.entries()) {
     const subpathsD: string[] = [];
@@ -527,8 +562,6 @@ export function buildPlanarSharedTopology(
 
     for (const loop of loops) {
       if (!loop.isOuter) {
-        // Verifica se este laço negativo é um FURO VAZIO REAL (expondo fundo 0, região Z-inferior ou translúcida)
-        // ou apenas o contorno sob uma ilha filha 100% opaca desenhada POR CIMA de `regionId`!
         let mustCutHole = false;
         for (let i = 0; i < loop.edges.length; i++) {
           const outLbl = loop.edges[i].outsideLabel;
@@ -543,7 +576,6 @@ export function buildPlanarSharedTopology(
           }
         }
         if (!mustCutHole) {
-          // Ilha opaca sobreposta: mantém a forma-mãe íntegra e limpa sem furo redundante!
           continue;
         }
         holeLoopCount++;
@@ -551,7 +583,6 @@ export function buildPlanarSharedTopology(
         outerLoopCount++;
       }
 
-      // Localiza índices de junção dentro do laço
       const junctionPositions: number[] = [];
       for (let i = 0; i < loop.edges.length; i++) {
         if (isJunctionVertex[loop.edges[i].fromVid]) {
@@ -577,7 +608,6 @@ export function buildPlanarSharedTopology(
             if (chainEdges.length > loop.edges.length) break;
           }
 
-          // Subdivide também caso `outsideLabel` mude sem vértice marcado
           let subStart = 0;
           for (let s = 1; s <= chainEdges.length; s++) {
             if (

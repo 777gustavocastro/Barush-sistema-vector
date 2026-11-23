@@ -347,7 +347,7 @@ export async function reconstructImageAsEditableObjects(
     24,
     Math.min(58, Math.round(52 - (params.contourSensitivity / 100) * 20))
   );
-  const coordPrecision = params.pathSimplification >= 70 ? 1 : 2;
+  const coordPrecision = params.pathSimplification >= 65 ? 2 : 3;
 
   const curveOptions: AdaptiveCurveFitOptions = {
     maxCurveErrorPx,
@@ -357,15 +357,28 @@ export async function reconstructImageAsEditableObjects(
     precision: coordPrecision,
   };
 
-  // Metadados Z-order globais para todas as sub-regiões
+  // Metadados Z-order globais e detecção de núcleo espesso (protege contornos finos <= 2.5px de tuck interno!)
   const regionMeta = new Map<number, RegionTopologyMetadata>();
   let globalZRank = 1;
   for (const obj of decomposition.objects) {
     for (const sub of obj.subRegions) {
+      let intCount = 0;
+      const maxCheck = Math.min(sub.pixelCount, 400);
+      const stepCheck = Math.max(1, Math.floor(sub.pixelCount / maxCheck));
+      let sampled = 0;
+      for (let i = 0; i < sub.pixelCount; i += stepCheck) {
+        if (decomposition.interiorMask[sub.pixels[i]]) intCount++;
+        sampled++;
+      }
+      const estInteriorRatio = sampled > 0 ? intCount / sampled : 0;
+      const hasThickInterior = sub.pixelCount >= 36 && estInteriorRatio >= 0.28;
+
       regionMeta.set(sub.id, {
         zRank: globalZRank++,
         isSemiTransparent: sub.isSemiTransparent,
         meanOklab: sub.meanOklab,
+        meanAlpha: sub.meanA,
+        hasThickInterior,
       });
     }
   }
@@ -379,6 +392,7 @@ export async function reconstructImageAsEditableObjects(
     alphaBytes: decomposition.substrateImage.data,
     hasUniformBg: decomposition.hasUniformOpaqueBackground,
     backgroundOklab: decomposition.backgroundOklab,
+    backgroundRgb: decomposition.backgroundRgb,
     regionMeta,
     curveOptions,
     enablePorterDuffSeamTuck: true,

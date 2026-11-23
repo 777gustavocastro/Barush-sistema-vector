@@ -196,6 +196,13 @@ export function validateSvgStructure(svgContent: string): SvgValidationReport {
     errors.push('PROIBIDO: Referência externa a imagem rasterizada detectada no SVG.');
   }
 
+  // Regra estrita da Seção 6: proíbe vector-effect="non-scaling-stroke" nos contornos da arte exportada
+  if (/\bvector-effect\s*=\s*["']non-scaling-stroke["']/i.test(trimmed)) {
+    errors.push(
+      'PROIBIDO: Atributo vector-effect="non-scaling-stroke" detectado nos contornos do SVG exportado.'
+    );
+  }
+
   // Verifica se todos os url(#id) de gradientes referenciados em fill existem em <defs>
   const referencedGradIds = [...trimmed.matchAll(/\bfill\s*=\s*["']url\(#([^)"']+)["']\)/gi)].map(
     (m) => m[1]

@@ -15,6 +15,7 @@ import {
   buildPlanarSharedTopology,
   type RegionTopologyMetadata,
 } from '../topology/planarTopologyGraph';
+import { buildRegionRelationGraph } from '../topology/regionRelationGraph';
 import type { AdaptiveCurveFitOptions } from '../geometry/adaptiveBezierFitter';
 import { buildExactTypographyInkMask } from '../typography/typographyProcessor';
 import type {
@@ -395,7 +396,7 @@ export async function reconstructImageAsEditableObjects(
     backgroundRgb: decomposition.backgroundRgb,
     regionMeta,
     curveOptions,
-    enablePorterDuffSeamTuck: true,
+    enablePorterDuffSeamTuck: false,
   });
 
   // 2. Constrói Silhuetas Exteriores Exatas dos Objetos Compostos para confinamento `<clipPath>` anti-vazamento!
@@ -581,7 +582,6 @@ export async function reconstructImageAsEditableObjects(
     }
   }
 
-  // 3. Executa o Ciclo Automático Iterativo de Correção e Validação Supersampling (Etapa 2)!
   const refined = await runStage2IterativeRefinement({
     originalImage: image,
     decomposition,
@@ -606,6 +606,12 @@ export async function reconstructImageAsEditableObjects(
         bandOverride
       ),
   });
+
+  const regions = decomposition.objects.flatMap((obj) => obj.subRegions);
+  refined.sceneGraph.regionRelations = buildRegionRelationGraph(
+    regions,
+    regionTopology.geometriesByRegion
+  );
 
   return refined;
 }

@@ -57,6 +57,7 @@ export interface VectorReconstructionSceneGraph {
   typographyObjectIds: string[];
   topologySummary: SceneTopologySummary;
   svgMarkup: string;
+  regionRelations?: import('../topology/regionRelationGraph').RegionRelationNode[];
 }
 
 export type Stage2DefectCategory =

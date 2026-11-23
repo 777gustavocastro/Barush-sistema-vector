@@ -6,6 +6,7 @@ export * from './geometry/adaptiveBezierFitter';
 export * from './geometry/subpixelEdgeLocalizer';
 export * from './geometry/contourInspector';
 export * from './topology/planarTopologyGraph';
+export * from './topology/regionRelationGraph';
 export * from './stage2/reconstructionSceneGraph';
 export * from './stage2/supersampledSvgRenderer';
 export * from './stage2/stage2Diagnostics';

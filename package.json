@@ -16,8 +16,9 @@
     "test:contours": "tsx scripts/test-contour-zoom-and-renderers.ts",
     "test:background": "tsx scripts/test-background-reconstruction.ts",
     "test:noise": "tsx scripts/test-noise-cleanup.ts",
+    "test:boundaries": "tsx scripts/test-region-boundaries.ts",
     "test:e2e": "tsx scripts/test-e2e-browser-inkscape.ts",
-    "test": "npm run verify:tools && npm run test:bird && npm run test:categories && npm run test:universal && npm run test:stage2 && npm run test:contours && npm run test:background && npm run test:noise && npm run test:e2e"
+    "test": "npm run verify:tools && npm run test:bird && npm run test:categories && npm run test:universal && npm run test:stage2 && npm run test:contours && npm run test:background && npm run test:noise && npm run test:boundaries && npm run test:e2e"
   },
   "dependencies": {
     "@techstark/opencv-js": "^5.0.0-release.1",

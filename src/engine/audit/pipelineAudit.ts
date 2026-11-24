@@ -24,6 +24,8 @@ export interface CandidateAuditRow {
   contourFidelityPct: number;
   gradientContinuityPct: number;
   selected: boolean;
+  rejected?: boolean;
+  reason?: string;
 }
 
 export interface PipelineAuditReport {
@@ -76,6 +78,10 @@ export interface PipelineAuditReport {
     missingComponents: number;
   };
   candidates: CandidateAuditRow[];
+  selection: {
+    reason: string;
+    needsReview: boolean;
+  };
 }
 
 interface AuditSession {
@@ -140,6 +146,10 @@ export function beginPipelineAudit(): void {
         missingComponents: 0,
       },
       candidates: [],
+      selection: {
+        reason: '',
+        needsReview: false,
+      },
     },
   };
 }
@@ -294,6 +304,11 @@ export function noteRegionCoverage(input: {
   if (input.fillRebuilt) slot.fillsRebuilt++;
   if (input.recall < slot.worstRecall) slot.worstRecall = round2(input.recall);
   slot.missingComponents += input.missingComponents ?? 0;
+}
+
+export function noteSelection(reason: string, needsReview: boolean): void {
+  if (!session) return;
+  session.report.selection = { reason, needsReview };
 }
 
 export function noteCandidate(row: CandidateAuditRow): void {

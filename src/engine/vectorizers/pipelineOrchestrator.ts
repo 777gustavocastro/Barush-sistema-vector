@@ -515,11 +515,12 @@ export async function runVectorizationOnRgbaInternal(
     percent: 84,
   });
 
-  const { winner, winnerQuality } = await evaluateAndSelectBestCandidate(
+  const { winner, winnerQuality, selectionNeedsReview, selectionReason } = await evaluateAndSelectBestCandidate(
     sourceImage,
     candidates,
     colorAnalysis.hasTransparency,
-    colorAnalysis.gradientRatio
+    colorAnalysis.gradientRatio,
+    colorAnalysis.detectedCategory
   );
 
   const shouldOptimize = params.optimizeSvg !== false;
@@ -568,6 +569,7 @@ export async function runVectorizationOnRgbaInternal(
         ? 'A imagem contém microvariações estocásticas ou compressão com perdas que não possuem equivalente analítico exato em curvas Bézier; o motor priorizou geometria limpa sem criar fragmentos artificiais de ruído.'
         : undefined,
     qualityGate.approved ? undefined : qualityGate.summary,
+    selectionNeedsReview ? selectionReason : undefined,
   ]
     .filter(Boolean)
     .join(' ') || undefined;

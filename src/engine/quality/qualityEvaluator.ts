@@ -1,5 +1,6 @@
 import type {
   CandidateEvaluationSummary,
+  DetectedImageCategory,
   QualityComparisonReport,
   RawRgbaImage,
 } from '../types';
@@ -7,7 +8,7 @@ import { deltaECiede2000FromLab } from '../color/perceptualColor';
 import { computeExactEuclideanDistanceTransform } from '../stage2/stage2Diagnostics';
 import { renderSvgSupersampled } from '../stage2/supersampledSvgRenderer';
 import { validateSvgStructure } from '../validation/fileValidator';
-import { isAuditActive, noteCandidate } from '../audit/pipelineAudit';
+import { isAuditActive, noteCandidate, noteSelection } from '../audit/pipelineAudit';
 
 /**
  * Rasteriza o SVG gerado com Supersampling (`2×`) e integração de área pré-multiplicada
@@ -455,19 +456,55 @@ export interface VectorSvgCandidateInput {
  * CIE ΔE Lab, contornos Sobel F1, continuidade humana de gradientes e organização editável
  * (presença de gradientes SVG reais quando a imagem possui degradês), retornando o melhor candidato!
  */
+function categoryWeights(
+  category: DetectedImageCategory | undefined,
+  gradientRatio: number
+): { ssim: number; color: number; contour: number; gradient: number; iou: number } {
+  if (category === 'typography_text') return { ssim: 0.2, color: 0.16, contour: 0.22, gradient: 0.06, iou: 0.36 };
+  if (category === 'gradient_logo' || category === 'metallic_lighting' || gradientRatio >= 0.2) {
+    return { ssim: 0.3, color: 0.3, contour: 0.08, gradient: 0.2, iou: 0.12 };
+  }
+  if (category === 'solid_logo' || category === 'monochrome_drawing' || category === 'icon_graphic') {
+    return { ssim: 0.22, color: 0.16, contour: 0.28, gradient: 0.06, iou: 0.28 };
+  }
+  if (category === 'photograph') return { ssim: 0.28, color: 0.24, contour: 0.12, gradient: 0.18, iou: 0.18 };
+  return { ssim: 0.24, color: 0.2, contour: 0.2, gradient: 0.12, iou: 0.24 };
+}
+
+function structuralRejection(
+  quality: QualityComparisonReport,
+  hasRaster: boolean
+): string | null {
+  if (hasRaster) return 'raster embutido';
+  const iou = quality.iouPct ?? 100;
+  const delta = quality.meanDeltaE2000 ?? quality.meanDeltaELab;
+  const hausdorff = quality.hausdorffDistancePx ?? 0;
+  const chamfer = quality.chamferDistancePx ?? 0;
+  if (iou < 72) return `cobertura ${iou.toFixed(1)}%`;
+  if (delta > 8 && iou < 94) return `ΔE₀₀ ${delta.toFixed(2)} com IoU ${iou.toFixed(1)}%`;
+  if (quality.contourFidelityPct < 45 && iou < 90) return `contorno ${quality.contourFidelityPct}%`;
+  if (hausdorff > 14 && iou < 92) return `Hausdorff ${hausdorff.toFixed(1)} px`;
+  if (chamfer > 2.4) return `Chamfer ${chamfer.toFixed(2)} px`;
+  return null;
+}
+
 export async function evaluateAndSelectBestCandidate(
   original: RawRgbaImage,
   candidates: VectorSvgCandidateInput[],
   hasTransparency: boolean,
-  sourceGradientRatio: number
+  sourceGradientRatio: number,
+  category?: DetectedImageCategory
 ): Promise<{
   winner: VectorSvgCandidateInput;
   winnerQuality: QualityComparisonReport | undefined;
+  selectionNeedsReview: boolean;
+  selectionReason: string;
 }> {
   if (candidates.length === 1) {
     const q = await evaluateSvgVisualQuality(original, candidates[0].svg, hasTransparency);
     if (isAuditActive() && q) {
       const struct = validateSvgStructure(candidates[0].svg);
+      const rejection = structuralRejection(q, struct.hasEmbeddedRaster);
       noteCandidate({
         candidateId: candidates[0].candidateId,
         engineKind: candidates[0].engineKind,
@@ -481,9 +518,17 @@ export async function evaluateAndSelectBestCandidate(
         contourFidelityPct: q.contourFidelityPct,
         gradientContinuityPct: q.gradientContinuityPct,
         selected: true,
+        rejected: rejection !== null,
+        reason: rejection ?? 'único candidato íntegro',
       });
+      noteSelection(rejection ? `único candidato com ressalva: ${rejection}` : 'único candidato íntegro', rejection !== null);
     }
-    return { winner: candidates[0], winnerQuality: q };
+    return {
+      winner: candidates[0],
+      winnerQuality: q,
+      selectionNeedsReview: q ? structuralRejection(q, false) !== null : false,
+      selectionReason: 'único candidato',
+    };
   }
 
   const summaries: CandidateEvaluationSummary[] = [];
@@ -509,13 +554,13 @@ export async function evaluateAndSelectBestCandidate(
 
     // Pontuação composta perceptual + estrutural (valoriza gradientes nativos reais, topologia limpa e penaliza fragmentação de anti-aliasing)
     const nativeGradBonus =
-      sourceGradientRatio >= 0.2 && struct.gradientCount >= 4
-        ? Math.min(5.0, 2.0 + struct.gradientCount * 0.35)
+      sourceGradientRatio >= 0.2 && struct.gradientCount >= 1 && struct.gradientCount <= 8
+        ? Math.min(4.0, 1.2 + struct.gradientCount * 0.45)
         : 0;
-    const topologyCleanBonus =
-      cand.engineKind === 'opencv_bezier_gradients' && q.ssimPct >= 97.2 && q.colorFidelityPct >= 97.0
-        ? 1.55
-        : 0;
+    const weights = categoryWeights(category, sourceGradientRatio);
+    const tonalImage =
+      category === 'gradient_logo' || category === 'metallic_lighting' || sourceGradientRatio >= 0.18;
+    const delta = q.meanDeltaE2000 ?? q.meanDeltaELab;
     const relativeBloatRatio =
       Number.isFinite(minValidPathCount) && minValidPathCount > 0
         ? struct.pathCount / Math.max(4, minValidPathCount)
@@ -538,14 +583,18 @@ export async function evaluateAndSelectBestCandidate(
         ? Math.min(6.0, ((q.chamferDistancePx ?? 0) - 0.35) * 2.4)
         : 0);
 
+    let rejection = structuralRejection(q, struct.hasEmbeddedRaster);
+    if (!rejection && tonalImage && struct.gradientCount === 0 && (delta > 2.2 || q.ssimPct < 92)) {
+      rejection = 'degradê representado por cor sólida';
+    }
     const compositeScore = Number(
       (
-        q.ssimPct * 0.34 +
-        q.colorFidelityPct * 0.3 +
-        q.contourFidelityPct * 0.2 +
-        q.gradientContinuityPct * 0.16 +
-        nativeGradBonus +
-        topologyCleanBonus -
+        q.ssimPct * weights.ssim +
+        q.colorFidelityPct * weights.color +
+        q.contourFidelityPct * weights.contour +
+        q.gradientContinuityPct * weights.gradient +
+        (q.iouPct ?? 0) * weights.iou +
+        nativeGradBonus -
         excessiveFragmentationPenalty -
         localizedDefectPenalty
       ).toFixed(2)
@@ -562,18 +611,32 @@ export async function evaluateAndSelectBestCandidate(
       objectCount: struct.objectCount,
       pathCount: struct.pathCount,
       gradientCount: struct.gradientCount,
+      rejected: rejection !== null,
+      reason: rejection ?? undefined,
     });
   }
 
   if (summaries.length === 0) {
-    return { winner: candidates[0], winnerQuality: undefined };
+    return {
+      winner: candidates[0],
+      winnerQuality: undefined,
+      selectionNeedsReview: true,
+      selectionReason: 'nenhum candidato pôde ser medido',
+    };
   }
 
-  summaries.sort((a, b) => b.compositeScore - a.compositeScore);
-  const bestSummary = summaries[0];
+  const eligible = summaries.filter((row) => !row.rejected);
+  const pool = eligible.length > 0 ? eligible : summaries;
+  pool.sort((a, b) => b.compositeScore - a.compositeScore);
+  const bestSummary = pool[0];
+  const needsReview = eligible.length === 0;
+  bestSummary.reason = needsReview
+    ? `nenhum candidato íntegro; menor defeito em ${bestSummary.reason ?? bestSummary.candidateId}`
+    : `equilíbrio da categoria ${category ?? 'geral'}: SSIM ${bestSummary.ssimPct}, contorno ${bestSummary.contourFidelityPct}%, IoU considerado no peso`;
   const winIdx = candidates.findIndex((c) => c.candidateId === bestSummary.candidateId);
   const chosenIdx = winIdx >= 0 ? winIdx : 0;
   const winnerReport = reports[chosenIdx];
+  noteSelection(bestSummary.reason, needsReview);
   if (isAuditActive()) {
     for (const summary of summaries) {
       const cand = candidates.find((item) => item.candidateId === summary.candidateId);
@@ -592,6 +655,8 @@ export async function evaluateAndSelectBestCandidate(
         contourFidelityPct: summary.contourFidelityPct,
         gradientContinuityPct: summary.gradientContinuityPct,
         selected: summary.candidateId === bestSummary.candidateId,
+        rejected: summary.rejected,
+        reason: summary.candidateId === bestSummary.candidateId ? bestSummary.reason : summary.reason,
       });
     }
   }
@@ -603,5 +668,7 @@ export async function evaluateAndSelectBestCandidate(
   return {
     winner: candidates[chosenIdx],
     winnerQuality: winnerReport,
+    selectionNeedsReview: needsReview,
+    selectionReason: bestSummary.reason,
   };
 }

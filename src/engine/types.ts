@@ -151,6 +151,8 @@ export interface CandidateEvaluationSummary {
   objectCount: number;
   pathCount: number;
   gradientCount: number;
+  rejected?: boolean;
+  reason?: string;
 }
 
 export interface QualityComparisonReport {

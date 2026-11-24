@@ -16,6 +16,7 @@ import {
   type RegionTopologyMetadata,
 } from '../topology/planarTopologyGraph';
 import { buildRegionRelationGraph } from '../topology/regionRelationGraph';
+import { separateEnclosedBackgroundCavities } from '../topology/enclosedCavitySeparator';
 import { restoreOccludedRectangles } from '../topology/occlusionCompletion';
 import { buildUniformContourStroke } from '../geometry/contourStrokeBuilder';
 import {
@@ -339,6 +340,7 @@ export async function reconstructImageAsEditableObjects(
     noiseRemoval: params.noiseRemoval,
     typographyInkMask,
   });
+  separateEnclosedBackgroundCavities(decomposition);
 
   // Calibra parâmetros geométricos de ajuste de curvas conforme os controles do usuário
   const maxCurveErrorPx = Number(

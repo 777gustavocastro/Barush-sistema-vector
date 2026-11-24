@@ -213,21 +213,38 @@ function inspectGeometry(
   svg: string,
   original: RawRgbaImage
 ): { issues: string[]; contour: UniversalVectorizationReport['contourQuality'] } {
-  const paths = [...svg.matchAll(/<path\b([^>]*)>/gi)].map((match) => match[1]);
-  const ds = paths.map((attrs) => attrs.match(/\bd="([^"]+)"/i)?.[1] ?? '');
   const seen = new Set<string>();
   let duplicatePaths = 0;
-  for (const d of ds) {
-    if (!d) continue;
-    if (seen.has(d)) duplicatePaths++;
-    seen.add(d);
-  }
   let improperlyOpenPaths = 0;
-  for (const attrs of paths) {
-    const fill = (attrs.match(/\bfill="([^"]+)"/i)?.[1] ?? '').toLowerCase();
-    const d = attrs.match(/\bd="([^"]+)"/i)?.[1] ?? '';
-    const isStroke = /\bstroke="(?!none)/i.test(attrs) && (fill === 'none' || fill === '');
-    if (!isStroke && d && !/\bZ\b/i.test(d)) improperlyOpenPaths++;
+  const groupFillNone: boolean[] = [false];
+  const groupHasStroke: boolean[] = [false];
+  for (const part of svg.split(/(<g\b[^>]*>|<\/g>|<path\b[^>]*>)/i)) {
+    if (/^<g\b/i.test(part)) {
+      const fill = part.match(/\bfill="([^"]*)"/i)?.[1]?.toLowerCase();
+      const stroke = part.match(/\bstroke="([^"]*)"/i)?.[1]?.toLowerCase();
+      const parentFill = groupFillNone[groupFillNone.length - 1];
+      const parentStroke = groupHasStroke[groupHasStroke.length - 1];
+      groupFillNone.push(fill === 'none' ? true : fill ? false : parentFill);
+      groupHasStroke.push(stroke && stroke !== 'none' ? true : stroke === 'none' ? false : parentStroke);
+      continue;
+    }
+    if (/^<\/g>/i.test(part)) {
+      if (groupFillNone.length > 1) groupFillNone.pop();
+      if (groupHasStroke.length > 1) groupHasStroke.pop();
+      continue;
+    }
+    if (!/^<path\b/i.test(part)) continue;
+    const fill = part.match(/\bfill="([^"]*)"/i)?.[1]?.toLowerCase() ?? '';
+    const stroke = part.match(/\bstroke="([^"]*)"/i)?.[1]?.toLowerCase() ?? '';
+    const d = part.match(/\bd="([^"]*)"/i)?.[1] ?? '';
+    if (d) {
+      if (seen.has(d)) duplicatePaths++;
+      seen.add(d);
+    }
+    const fillNone = fill === 'none' || (fill === '' && groupFillNone[groupFillNone.length - 1]);
+    const hasStroke =
+      (stroke !== '' && stroke !== 'none') || (stroke === '' && groupHasStroke[groupHasStroke.length - 1]);
+    if (!(hasStroke && fillNone) && d && !/\bZ\b/i.test(d)) improperlyOpenPaths++;
   }
   const inspected = inspectAndSanitizeSvgContours(svg, original, 1, 2);
   const spikes = inspected.summary.artificialSpikesTrimmed;

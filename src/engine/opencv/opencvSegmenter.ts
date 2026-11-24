@@ -620,6 +620,39 @@ export async function analyzeAndSegmentWithOpenCv(
     const minGradForCurvature = (isPhoto ? 4.4 : gradientCanvas ? 8.0 : 5.0) * detailScale;
     const hardStepJump = (isPhoto ? 15.5 : gradientCanvas ? 22 : 16.0) * detailScale;
     const maxSmoothStepOk = (isPhoto ? 5.2 : 5.6) * detailScale;
+    const alignedRampStep = hardStepJump * 0.72;
+    const rampDeriv = (index: number): [number, number, number, number, number, number] => {
+      const x = index % width;
+      const y = (index - x) / width;
+      const pL = y * width + Math.max(0, x - 1);
+      const pR = y * width + Math.min(width - 1, x + 1);
+      const pU = Math.max(0, y - 1) * width + x;
+      const pD = Math.min(height - 1, y + 1) * width + x;
+      return [
+        L[pR] - L[pL],
+        a[pR] - a[pL],
+        b[pR] - b[pL],
+        L[pD] - L[pU],
+        a[pD] - a[pU],
+        b[pD] - b[pU],
+      ];
+    };
+    const rampContinues = (left: number, right: number): boolean => {
+      const gLeft = rampDeriv(left);
+      const gRight = rampDeriv(right);
+      let magLeft = 0;
+      let magRight = 0;
+      let dot = 0;
+      for (let i = 0; i < 6; i++) {
+        magLeft += gLeft[i] * gLeft[i];
+        magRight += gRight[i] * gRight[i];
+        dot += gLeft[i] * gRight[i];
+      }
+      magLeft = Math.sqrt(magLeft);
+      magRight = Math.sqrt(magRight);
+      if (magLeft < minGradForCurvature || magRight < minGradForCurvature * 0.65) return false;
+      return dot / (magLeft * magRight) >= 0.62;
+    };
 
     const isEdgeBarrier = new Uint8Array(totalPixels);
     for (let i = 0; i < totalPixels; i++) {
@@ -680,7 +713,7 @@ export async function analyzeAndSegmentWithOpenCv(
             b[nPx] - b0,
             (alpha[nPx] - al0) * 0.8
           );
-          if (stepDe <= maxSmoothStepOk) {
+          if (stepDe <= maxSmoothStepOk || (stepDe <= alignedRampStep && rampContinues(px, nPx))) {
             regionIdMap[nPx] = currentRegId;
             bfsQueue[tail++] = nPx;
           }

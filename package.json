@@ -25,8 +25,9 @@
     "test:coverage": "tsx scripts/test-region-coverage.ts",
     "test:holes": "tsx scripts/test-topology-holes.ts",
     "test:zoom-precision": "tsx scripts/test-contour-zoom-precision.ts",
+    "test:tonal": "tsx scripts/test-tonal-gradients.ts",
     "test:e2e": "tsx scripts/test-e2e-browser-inkscape.ts",
-    "test": "npm run verify:tools && npm run test:bird && npm run test:categories && npm run test:universal && npm run test:stage2 && npm run test:contours && npm run test:background && npm run test:noise && npm run test:boundaries && npm run test:strokes && npm run test:geometry && npm run test:gradients && npm run test:quality && npm run test:audit && npm run test:coverage && npm run test:holes && npm run test:zoom-precision && npm run test:e2e"
+    "test": "npm run verify:tools && npm run test:bird && npm run test:categories && npm run test:universal && npm run test:stage2 && npm run test:contours && npm run test:background && npm run test:noise && npm run test:boundaries && npm run test:strokes && npm run test:geometry && npm run test:gradients && npm run test:quality && npm run test:audit && npm run test:coverage && npm run test:holes && npm run test:zoom-precision && npm run test:tonal && npm run test:e2e"
   },
   "dependencies": {
     "@techstark/opencv-js": "^5.0.0-release.1",

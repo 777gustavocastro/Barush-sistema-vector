@@ -1,7 +1,7 @@
-import { Resvg } from '@resvg/resvg-js';
 import type { DetectedImageCategory, RawRgbaImage } from '../types';
 import { inpaintTypographyInkMask } from '../opencv/opencvSegmenter';
 import { geometricAcceptance, type Point2D } from './contract/geometricContract';
+import { rasterizeSimpleSvgMask } from './primitives/browserSafeMaskRasterizer';
 import {
   extractSubpixelLoopsFromField,
   signedArea,
@@ -493,14 +493,13 @@ function renderCoverage(svgEl: string, mask: Uint8Array, width: number, height: 
   iou: number;
   recall: number;
 } {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${svgEl}</svg>`;
-  const pixels = new Resvg(svg, { fitTo: { mode: 'width', value: width } }).render().pixels;
+  const candMask = rasterizeSimpleSvgMask(svgEl, width, height);
   let inter = 0;
   let union = 0;
   let ref = 0;
   for (let i = 0; i < mask.length; i++) {
     const a = mask[i] === 1;
-    const b = pixels[i * 4 + 3] >= 128;
+    const b = candMask[i] === 1;
     if (a) ref++;
     if (a || b) union++;
     if (a && b) inter++;

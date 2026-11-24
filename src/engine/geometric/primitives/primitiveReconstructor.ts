@@ -1,4 +1,3 @@
-import { Resvg } from '@resvg/resvg-js';
 import {
   boundaryError,
   geometricAcceptance,
@@ -11,6 +10,7 @@ import {
   type ErrorStats,
   type Point2D,
 } from '../contract/geometricContract';
+import { isInsidePrimitive } from './browserSafeMaskRasterizer';
 import { arcToSvgElement, fitCircularArcPrimitive, fitEllipticalArcPrimitive } from './arcFitter';
 import { circleToSvgElement, fitCirclePrimitive } from './circleFitter';
 import { compositeToSvgElement, fitCompositePrimitive } from './compositeFitter';
@@ -179,7 +179,8 @@ export function primitiveToSvgElement(
 }
 
 function validateAgainstMask(
-  svgElement: string,
+  primitive: GeometricPrimitive,
+  sampledBoundary: Point2D[],
   mask: MaskValidationInput,
   boundaryPoints?: Point2D[]
 ): MaskValidationMetrics {
@@ -187,12 +188,13 @@ function validateAgainstMask(
   let y0 = 0;
   let cw = mask.width;
   let ch = mask.height;
-  if (boundaryPoints && boundaryPoints.length > 0) {
+  const pts = boundaryPoints && boundaryPoints.length > 0 ? boundaryPoints : sampledBoundary;
+  if (pts.length > 0) {
     let minX = mask.width;
     let minY = mask.height;
     let maxX = 0;
     let maxY = 0;
-    for (const p of boundaryPoints) {
+    for (const p of pts) {
       if (p.x < minX) minX = p.x;
       if (p.y < minY) minY = p.y;
       if (p.x > maxX) maxX = p.x;
@@ -205,17 +207,12 @@ function validateAgainstMask(
     cw = Math.max(2, x1 - x0);
     ch = Math.max(2, y1 - y0);
   }
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${cw}" height="${ch}" viewBox="${x0} ${y0} ${cw} ${ch}">${svgElement}</svg>`;
-  const rendered = new Resvg(svg, {
-    fitTo: { mode: 'width', value: cw },
-  }).render();
   const fullW = mask.width;
-  const pixels = rendered.pixels;
   return maskIoU(
     cw,
     ch,
     (x, y) => mask.referenceMask[(y + y0) * fullW + (x + x0)] === 1,
-    (x, y) => pixels[(y * cw + x) * 4 + 3] >= 128
+    (x, y) => isInsidePrimitive(x + x0 + 0.5, y + y0 + 0.5, primitive, sampledBoundary)
   );
 }
 
@@ -379,7 +376,7 @@ export function reconstructClosedContourPrimitive(
 
     let maskMetrics: MaskValidationMetrics | undefined;
     if (maskValidation) {
-      maskMetrics = validateAgainstMask(svgElement, maskValidation, boundaryPoints);
+      maskMetrics = validateAgainstMask(cand.primitive, sampled, maskValidation, boundaryPoints);
       const minIoU = maskValidation.minIoU ?? geometricAcceptance.coverage.iouSolid;
       const minRecall = maskValidation.minRecall ?? geometricAcceptance.coverage.recallDetail;
       if (maskMetrics.iou < minIoU || maskMetrics.recall < minRecall) {

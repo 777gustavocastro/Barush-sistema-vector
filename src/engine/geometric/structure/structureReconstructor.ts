@@ -1,6 +1,6 @@
-import { Resvg } from '@resvg/resvg-js';
 import type { RawRgbaImage } from '../../types';
 import type { Point2D } from '../contract/geometricContract';
+import { rasterizeSimpleSvgMask } from '../primitives/browserSafeMaskRasterizer';
 import { fitInfiniteLineTLS, intersectLines } from '../primitives/lineFitter';
 import { reconstructClosedContourPrimitive } from '../primitives/primitiveReconstructor';
 import { signedArea } from '../primitives/subpixelBoundaryExtractor';
@@ -512,11 +512,7 @@ function loopToSubpath(geom: LoopGeom, positive: boolean): string {
 }
 
 function renderMask(element: string, width: number, height: number): Uint8Array {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${element}</svg>`;
-  const pixels = new Resvg(svg, { fitTo: { mode: 'width', value: width } }).render().pixels;
-  const mask = new Uint8Array(width * height);
-  for (let i = 0; i < mask.length; i++) mask[i] = pixels[i * 4 + 3] >= 128 ? 1 : 0;
-  return mask;
+  return rasterizeSimpleSvgMask(element, width, height);
 }
 
 function coverageOf(reference: Uint8Array, candidate: Uint8Array): { iou: number; recall: number } {

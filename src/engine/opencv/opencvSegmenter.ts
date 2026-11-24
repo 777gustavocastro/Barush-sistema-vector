@@ -14,6 +14,14 @@ import {
   type BackgroundClassification,
 } from '../background/backgroundClassifier';
 import { cleanContextualSegmentationNoise } from '../noise/contextualNoiseCleaner';
+import {
+  isAuditActive,
+  noteFinalSegmentation,
+  noteHighContrastSmall,
+  noteMergedRegion,
+  noteProtectedRegions,
+  noteSegmentationStage,
+} from '../audit/pipelineAudit';
 
 interface OpenCvApi {
   Mat: new (rows?: number, cols?: number, type?: number) => CvMat;
@@ -680,6 +688,8 @@ export async function analyzeAndSegmentWithOpenCv(
       }
     }
 
+    if (isAuditActive()) noteSegmentationStage('A-nucleos', regionIdMap);
+
     // Passo A.2: Semeadura Estrutural de Espinhas de Contornos e Traços Finos (1.5–4px) ANTES do Passo B!
     // Garante que contornos pretos, contornos brancos, contornos duplos e linhas finas tenham sua espinha
     // central pura registrada antes da desmistura de anti-aliasing, evitando espessuras irregulares,
@@ -835,6 +845,8 @@ export async function analyzeAndSegmentWithOpenCv(
         }
       }
     }
+
+    if (isAuditActive()) noteSegmentationStage('A2-espinhas', regionIdMap);
 
     // Congela a máscara de sementes puras do Passo A + A.2 para impedir que o Passo B "rasteje" (creep)
     // por cima de contornos finos internos usando pixels de franja recém-atribuídos como referência!
@@ -1100,6 +1112,8 @@ export async function analyzeAndSegmentWithOpenCv(
       }
       if (changed === 0) break;
     }
+
+    if (isAuditActive()) noteSegmentationStage('B-antialiasing', regionIdMap);
 
     // Passo C: Agrupa todos os pixels restantes (contornos finos reais, pupilas, brilhos puntiformes, microdetalhes!)
     // Ordena sementes para iniciar SEMPRE na espinha central pura do traço fino (maior contraste local / extremo de L),
@@ -1465,6 +1479,8 @@ export async function analyzeAndSegmentWithOpenCv(
       }
     }
 
+    if (isAuditActive()) noteSegmentationStage('C-unificacao', regionIdMap);
+
     // Passo D: Consolidação Perceptual Controlada (evita milhares de fragmentos em fotos/texturas/JPEG SEM perder partes!)
     const baseNoiseFloor =
       (opts.noiseRemoval ?? 0) >= 50
@@ -1491,6 +1507,7 @@ export async function analyzeAndSegmentWithOpenCv(
       backgroundRgb: bgRgb,
     });
     const protectedRegionIds = new Set(noiseReport.protectedRegionIds);
+    if (isAuditActive()) noteProtectedRegions(protectedRegionIds.size);
 
     const consolidateSmallOrExcessRegions = () => {
       const regPixels = new Map<number, number[]>();
@@ -1506,7 +1523,23 @@ export async function analyzeAndSegmentWithOpenCv(
       }
 
       if (regPixels.size <= maxTargetRegions && noiseFloorPx === 0) {
+        if (isAuditActive()) {
+          let small = 0;
+          for (const pxs of regPixels.values()) {
+            if (pxs.length >= 4 && pxs.length <= 40) small++;
+          }
+          noteHighContrastSmall(true, small);
+          noteHighContrastSmall(false, small);
+        }
         return regPixels;
+      }
+
+      if (isAuditActive()) {
+        let small = 0;
+        for (const pxs of regPixels.values()) {
+          if (pxs.length >= 4 && pxs.length <= 40) small++;
+        }
+        noteHighContrastSmall(true, small);
       }
 
       const regMean = new Map<number, [number, number, number, number]>();
@@ -1569,6 +1602,7 @@ export async function analyzeAndSegmentWithOpenCv(
         // Nunca funde um detalhe pequeno de altíssimo contraste (ex: olho/pupila/estrela ΔE > 22) mesmo sob orçamento apertado!
         const maxAllowedMergeDe = mustReduceForBudget ? 22.0 : 12.0;
         if (bestTarget > 0 && bestDe <= maxAllowedMergeDe) {
+          noteMergedRegion();
           const targetArr = regPixels.get(bestTarget)!;
           for (let i = 0; i < pxs.length; i++) {
             regionIdMap[pxs[i]] = bestTarget;
@@ -1587,10 +1621,22 @@ export async function analyzeAndSegmentWithOpenCv(
         }
       }
 
+      if (isAuditActive()) {
+        let small = 0;
+        for (const pxs of regPixels.values()) {
+          if (pxs.length >= 4 && pxs.length <= 40) small++;
+        }
+        noteHighContrastSmall(false, small);
+      }
+
       return regPixels;
     };
 
     const buckets = consolidateSmallOrExcessRegions();
+    if (isAuditActive()) {
+      noteSegmentationStage('D-consolidacao', regionIdMap);
+      noteFinalSegmentation(regionIdMap, width, height, L, a, b);
+    }
 
     // Calcula máscara de núcleo interior (1px erodido) e imagem decontaminada de borda (Alpha Matting)
     const interiorMask = new Uint8Array(totalPixels);

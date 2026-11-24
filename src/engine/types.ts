@@ -3,6 +3,7 @@ import type {
   VectorReconstructionSceneGraph,
 } from './stage2/reconstructionSceneGraph';
 import type { UniversalVectorizationReport } from './quality/universalQualityGate';
+import type { PipelineAuditReport } from './audit/pipelineAudit';
 
 export type SupportedRasterFormat = 'png' | 'jpg' | 'jpeg' | 'webp';
 
@@ -198,6 +199,7 @@ export interface VectorizationPipelineResult {
   validation: SvgValidationReport;
   qualityReport?: QualityComparisonReport;
   qualityGate?: UniversalVectorizationReport;
+  pipelineAudit?: PipelineAuditReport;
   sceneGraph?: VectorReconstructionSceneGraph;
   stage2Report?: Stage2InspectionReport;
   reconstructedGradientCount: number;

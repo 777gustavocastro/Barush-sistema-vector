@@ -1,4 +1,5 @@
 import type { Point2D } from './adaptiveBezierFitter';
+import { isAuditActive, noteSchneiderDeviation } from '../audit/pipelineAudit';
 
 export interface SchneiderFitOptions {
   maxErrorPx?: number;
@@ -222,6 +223,7 @@ function fitSpan(
     quad = fitQuadraticLeastSquares(pts, quadU);
   }
   if (quad && quad.error <= maxError) {
+    if (isAuditActive()) noteSchneiderDeviation(quad.error, false);
     out.push(
       `Q ${trimNum(quad.x1, precision)} ${trimNum(quad.y1, precision)} ${trimNum(pLast.x, precision)} ${trimNum(pLast.y, precision)}`
     );
@@ -242,10 +244,12 @@ function fitSpan(
   if (err.error <= maxError || depth >= 8 || err.index <= 1 || err.index >= n - 2) {
     const quadAgain = tryQuadraticFromCubic(bez, maxError * 0.5);
     if (quadAgain) {
+      if (isAuditActive()) noteSchneiderDeviation(err.error, err.error > maxError);
       out.push(
         `Q ${trimNum(quadAgain.x, precision)} ${trimNum(quadAgain.y, precision)} ${trimNum(pLast.x, precision)} ${trimNum(pLast.y, precision)}`
       );
     } else {
+      if (isAuditActive()) noteSchneiderDeviation(err.error, err.error > maxError);
       out.push(
         `C ${trimNum(bez[1].x, precision)} ${trimNum(bez[1].y, precision)} ${trimNum(bez[2].x, precision)} ${trimNum(bez[2].y, precision)} ${trimNum(pLast.x, precision)} ${trimNum(pLast.y, precision)}`
       );

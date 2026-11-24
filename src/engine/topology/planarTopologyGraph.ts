@@ -17,6 +17,7 @@ import {
   oklabScaledToSrgb8,
   type PerceptualOklabBuffers,
 } from '../color/perceptualColor';
+import { isAuditActive, noteTopology } from '../audit/pipelineAudit';
 
 interface CrackDirectedEdge extends CrackEdgeDescriptor {
   used: boolean;
@@ -635,6 +636,26 @@ export function buildPlanarSharedTopology(
         pathD: subpathsD.join(' '),
       });
     }
+  }
+
+  if (isAuditActive()) {
+    let holes = 0;
+    let evenOdd = 0;
+    let openFilled = 0;
+    for (const geom of geometriesByRegion.values()) {
+      holes += geom.holeLoopCount;
+      if (geom.usesEvenOdd) evenOdd++;
+      if (geom.pathD && !/\bZ\b/i.test(geom.pathD)) openFilled++;
+    }
+    noteTopology({
+      regionsWithPath: geometriesByRegion.size,
+      sharedBoundaries: canonicalChainCache.size,
+      holes,
+      evenOddRegions: evenOdd,
+      openFilledPaths: openFilled,
+      junctionVertices: junctionVertexCount,
+      tuckEnabled: enablePorterDuffSeamTuck,
+    });
   }
 
   return {

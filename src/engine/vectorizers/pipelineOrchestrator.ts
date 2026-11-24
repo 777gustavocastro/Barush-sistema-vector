@@ -24,6 +24,13 @@ import {
 import { inspectAndSanitizeSvgContours } from '../geometry/contourInspector';
 import { validateSvgStructure } from '../validation/fileValidator';
 import { buildUniversalVectorizationReport } from '../quality/universalQualityGate';
+import {
+  beginPipelineAudit,
+  countStrongEdges,
+  countThinRuns,
+  finishPipelineAudit,
+  noteResolution,
+} from '../audit/pipelineAudit';
 import { reconstructNativeSvgGradients } from '../gradients/svgGradientReconstructor';
 import {
   buildExactTypographyInkMask,
@@ -109,6 +116,7 @@ export async function runVectorizationOnRgbaInternal(
   onProgress?: ProgressCallback
 ): Promise<InternalPipelineRunOutput> {
   const startedAt = performance.now();
+  beginPipelineAudit();
   const originalWidth = sourceImage.width;
   const originalHeight = sourceImage.height;
 
@@ -150,6 +158,17 @@ export async function runVectorizationOnRgbaInternal(
     maxDim
   );
   const denoisedImage = reduceImageNoise(baseWorkingImage, resolvedParams.noiseRemoval);
+  noteResolution({
+    originalWidth,
+    originalHeight,
+    workingWidth: denoisedImage.width,
+    workingHeight: denoisedImage.height,
+    wasDownscaled,
+    strongEdgesBefore: countStrongEdges(alphaCleaned.data, alphaCleaned.width, alphaCleaned.height),
+    strongEdgesAfter: countStrongEdges(baseWorkingImage.data, baseWorkingImage.width, baseWorkingImage.height),
+    thinRunsBefore: countThinRuns(alphaCleaned.data, alphaCleaned.width, alphaCleaned.height),
+    thinRunsAfter: countThinRuns(baseWorkingImage.data, baseWorkingImage.width, baseWorkingImage.height),
+  });
 
   const candidates: VectorSvgCandidateInput[] = [];
   let upscaleFactor: 1 | 2 | 3 = 1;
@@ -584,6 +603,7 @@ export async function runVectorizationOnRgbaInternal(
     workingHeight: baseWorkingImage.height,
     wasDownscaled,
     durationMs: Math.round((performance.now() - startedAt) * 100) / 100,
+    pipelineAudit: finishPipelineAudit(),
   };
 
   return { result, candidates };

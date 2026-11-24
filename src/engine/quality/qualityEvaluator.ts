@@ -7,6 +7,7 @@ import { deltaECiede2000FromLab } from '../color/perceptualColor';
 import { computeExactEuclideanDistanceTransform } from '../stage2/stage2Diagnostics';
 import { renderSvgSupersampled } from '../stage2/supersampledSvgRenderer';
 import { validateSvgStructure } from '../validation/fileValidator';
+import { isAuditActive, noteCandidate } from '../audit/pipelineAudit';
 
 /**
  * Rasteriza o SVG gerado com Supersampling (`2×`) e integração de área pré-multiplicada
@@ -465,6 +466,23 @@ export async function evaluateAndSelectBestCandidate(
 }> {
   if (candidates.length === 1) {
     const q = await evaluateSvgVisualQuality(original, candidates[0].svg, hasTransparency);
+    if (isAuditActive() && q) {
+      const struct = validateSvgStructure(candidates[0].svg);
+      noteCandidate({
+        candidateId: candidates[0].candidateId,
+        engineKind: candidates[0].engineKind,
+        pathCount: struct.pathCount,
+        objectCount: struct.objectCount,
+        gradientCount: struct.gradientCount,
+        ssimPct: q.ssimPct,
+        deltaE2000: q.meanDeltaE2000 ?? q.meanDeltaELab,
+        chamferPx: q.chamferDistancePx ?? 0,
+        iouPct: q.iouPct ?? 0,
+        contourFidelityPct: q.contourFidelityPct,
+        gradientContinuityPct: q.gradientContinuityPct,
+        selected: true,
+      });
+    }
     return { winner: candidates[0], winnerQuality: q };
   }
 
@@ -556,6 +574,27 @@ export async function evaluateAndSelectBestCandidate(
   const winIdx = candidates.findIndex((c) => c.candidateId === bestSummary.candidateId);
   const chosenIdx = winIdx >= 0 ? winIdx : 0;
   const winnerReport = reports[chosenIdx];
+  if (isAuditActive()) {
+    for (const summary of summaries) {
+      const cand = candidates.find((item) => item.candidateId === summary.candidateId);
+      const q = reports[candidates.findIndex((item) => item.candidateId === summary.candidateId)];
+      if (!cand || !q) continue;
+      noteCandidate({
+        candidateId: summary.candidateId,
+        engineKind: cand.engineKind,
+        pathCount: summary.pathCount,
+        objectCount: summary.objectCount,
+        gradientCount: summary.gradientCount,
+        ssimPct: summary.ssimPct,
+        deltaE2000: q.meanDeltaE2000 ?? q.meanDeltaELab,
+        chamferPx: q.chamferDistancePx ?? 0,
+        iouPct: q.iouPct ?? 0,
+        contourFidelityPct: summary.contourFidelityPct,
+        gradientContinuityPct: summary.gradientContinuityPct,
+        selected: summary.candidateId === bestSummary.candidateId,
+      });
+    }
+  }
 
   if (winnerReport) {
     winnerReport.evaluatedCandidates = summaries;

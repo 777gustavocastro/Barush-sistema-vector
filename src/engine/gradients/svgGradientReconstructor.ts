@@ -6,6 +6,7 @@ import {
   rgbToHex,
   srgb8ToOklabScaled,
 } from '../color/perceptualColor';
+import { isAuditActive, noteFill } from '../audit/pipelineAudit';
 import { traceMaskWithPotraceToSvgElements } from '../vectorizers/potraceEngine';
 
 export interface PerceptualGradientStop {
@@ -642,6 +643,7 @@ export function fitRegionSvgFill(
     colorSpan <= 9 ||
     (solidMeanDe <= 0.95 && solidP95 <= 4)
   ) {
+    if (isAuditActive()) noteFill('solid', colorSpan, solidMeanDe);
     return {
       kind: 'solid',
       fillValue: solidHex,
@@ -845,6 +847,7 @@ export function fitRegionSvgFill(
   const bestGrad = useRadial ? bestRadial : bestLinear;
 
   if (bestGrad.stops.length < 2 || bestGrad.meanDeltaE + 0.25 >= solidMeanDe) {
+    if (isAuditActive()) noteFill('solid', colorSpan, solidMeanDe);
     return {
       kind: 'solid',
       fillValue: solidHex,
@@ -943,6 +946,7 @@ export function fitRegionSvgFill(
 
     const defsXml = `<radialGradient id="${gradId}" gradientUnits="userSpaceOnUse" cx="${cxScaled}" cy="${cyScaled}" r="${rScaled}"${focalAttr}${transformAttr}>${radialStopTags}</radialGradient>`;
 
+    if (isAuditActive()) noteFill('radial', colorSpan, bestRadial.meanDeltaE);
     return {
       kind: 'radial',
       fillValue: `url(#${gradId})`,
@@ -1003,6 +1007,7 @@ export function fitRegionSvgFill(
     }
   }
 
+  if (isAuditActive()) noteFill(overlayLayer ? 'compound' : 'linear', colorSpan, bestLinear.meanDeltaE);
   return {
     kind: overlayLayer ? 'compound' : 'linear',
     fillValue: `url(#${gradId})`,

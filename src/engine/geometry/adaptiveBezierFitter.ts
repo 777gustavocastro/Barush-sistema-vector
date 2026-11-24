@@ -14,6 +14,8 @@ export interface FittedBezierChain {
   commands: FittedSegmentCommand[];
 }
 
+import { isAuditActive, noteBezierDeviation } from '../audit/pipelineAudit';
+
 export interface AdaptiveCurveFitOptions {
   /** Erro geométrico máximo tolerado em pixels ao ajustar curvas Bézier (padrão 0.22px). */
   maxCurveErrorPx?: number;
@@ -1068,6 +1070,7 @@ function fitSmoothSpanRecursive(
   let { maxDistSq, splitIdx } = computeMaxBezierError(pts, u, bez);
 
   if (maxDistSq <= maxErrorSq) {
+    if (isAuditActive()) noteBezierDeviation(Math.sqrt(maxDistSq), false);
     out.push(tryConvertCubicToExactQuadratic(bez));
     return;
   }
@@ -1081,6 +1084,7 @@ function fitSmoothSpanRecursive(
       maxDistSq = res.maxDistSq;
       splitIdx = res.splitIdx;
       if (maxDistSq <= maxErrorSq) {
+        if (isAuditActive()) noteBezierDeviation(Math.sqrt(maxDistSq), false);
         out.push(tryConvertCubicToExactQuadratic(bez));
         return;
       }
@@ -1088,6 +1092,7 @@ function fitSmoothSpanRecursive(
   }
 
   if (depth >= 8 || splitIdx <= 0 || splitIdx >= n - 1) {
+    if (isAuditActive()) noteBezierDeviation(Math.sqrt(maxDistSq), maxDistSq > maxErrorSq);
     out.push(tryConvertCubicToExactQuadratic(bez));
     return;
   }

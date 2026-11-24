@@ -50,6 +50,7 @@ import {
   type Stage2InspectionReport,
   type VectorReconstructionSceneGraph,
 } from '../stage2/reconstructionSceneGraph';
+import { reconstructWithGeometricEngine } from '../geometric/geometricReconstructionEngine';
 
 function isStrictlyMonochromeRequest(
   params: VectorizationParameters,
@@ -253,6 +254,27 @@ export async function runVectorizationOnRgbaInternal(
           label: 'Topologia Planar OKLab + Objetos de Traço Editáveis',
           engineKind: 'opencv_bezier_gradients',
           svg: candObjMono,
+        });
+      }
+    }
+
+    if (resolvedParams.enableGeometricCandidate === true) {
+      const geoOut = reconstructWithGeometricEngine(denoisedImage, {
+        category: colorAnalysis.detectedCategory,
+      });
+      if (!geoOut.skipped && geoOut.svg) {
+        const candGeoMono = normalizeSvgForEditorsAndScaling(
+          geoOut.svg,
+          originalWidth,
+          originalHeight,
+          denoisedImage.width,
+          denoisedImage.height
+        );
+        candidates.push({
+          candidateId: 'geometric-reconstruction-engine',
+          label: 'Geometric Reconstruction Engine (Primitivas + SDF + Bézier G1/G2 + Aparência)',
+          engineKind: 'geometric_reconstruction',
+          svg: candGeoMono,
         });
       }
     }
@@ -506,6 +528,41 @@ export async function runVectorizationOnRgbaInternal(
         engineKind: 'vtracer_rek_gradients',
         svg: cand3Svg,
       });
+    }
+
+    // CANDIDATO 4 (Integrado de forma controlada — Etapa 6): Geometric Reconstruction Engine
+    if (resolvedParams.enableGeometricCandidate === true) {
+      const geoTypoMask =
+        params.enhanceTypography !== false &&
+        colorAnalysis.typographyRegions.length > 0 &&
+        resolvedParams.detailPrecision >= 65
+          ? buildExactTypographyInkMask(
+              denoisedImage,
+              colorAnalysis.typographyRegions,
+              denoisedImage.width / originalWidth
+            )
+          : undefined;
+      const geoOut = reconstructWithGeometricEngine(denoisedImage, {
+        category: colorAnalysis.detectedCategory,
+        typographyMask: geoTypoMask,
+        typographyDefsXml: typoBaseDefs,
+        typographyGroupsXml: typoBaseGroups,
+      });
+      if (!geoOut.skipped && geoOut.svg) {
+        const candGeoSvg = normalizeSvgForEditorsAndScaling(
+          geoOut.svg,
+          originalWidth,
+          originalHeight,
+          denoisedImage.width,
+          denoisedImage.height
+        );
+        candidates.push({
+          candidateId: 'geometric-reconstruction-engine',
+          label: 'Geometric Reconstruction Engine (Primitivas + SDF + Bézier G1/G2 + Aparência)',
+          engineKind: 'geometric_reconstruction',
+          svg: candGeoSvg,
+        });
+      }
     }
   }
 

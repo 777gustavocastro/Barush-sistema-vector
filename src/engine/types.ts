@@ -10,7 +10,8 @@ export type SupportedRasterFormat = 'png' | 'jpg' | 'jpeg' | 'webp';
 export type VectorEngineKind =
   | 'opencv_bezier_gradients'
   | 'vtracer_rek_gradients'
-  | 'potrace_bezier';
+  | 'potrace_bezier'
+  | 'geometric_reconstruction';
 
 export type EnginePresetProfile =
   | 'auto'
@@ -95,6 +96,8 @@ export interface VectorizationParameters extends TunedSliderValues {
   enhanceTypography?: boolean;
   subpixelUpscale?: boolean;
   maxWorkingDimension?: number;
+  /** Habilita o candidato independente do Geometric Reconstruction Engine (Etapa 6 — integração controlada). */
+  enableGeometricCandidate?: boolean;
 }
 
 export interface VectorizationProgressEvent {
@@ -151,6 +154,9 @@ export interface CandidateEvaluationSummary {
   objectCount: number;
   pathCount: number;
   gradientCount: number;
+  iouPct?: number;
+  hausdorffPx?: number;
+  unintendedG1Breaks?: number;
   rejected?: boolean;
   reason?: string;
 }

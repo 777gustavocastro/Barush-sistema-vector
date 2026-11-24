@@ -25,8 +25,11 @@ export function extractSubpixelLoopsFromField(
   // Centros de pixel em (x + 0.5, y + 0.5). Cada célula cobre [x+0.5, x+1.5] x [y+0.5, y+1.5].
   for (let y = -1; y < height; y++) {
     for (let x = -1; x < width; x++) {
-      const sample = (sx: number, sy: number) =>
-        sx < 0 || sy < 0 || sx >= width || sy >= height ? 0 : field[sy * width + sx];
+      const sample = (sx: number, sy: number) => {
+        if (sx < 0 || sy < 0 || sx >= width || sy >= height) return 0;
+        const v = field[sy * width + sx];
+        return v === iso ? iso + 1e-4 : v;
+      };
 
       const vTL = sample(x, y);
       const vTR = sample(x + 1, y);
@@ -69,7 +72,7 @@ export function extractSubpixelLoopsFromField(
           const center = 0.25 * (vTL + vTR + vBR + vBL);
           if (center >= iso) {
             push(left, top);
-            push(bottom, right);
+            push(right, bottom);
           } else {
             push(left, bottom);
             push(right, top);
@@ -92,7 +95,7 @@ export function extractSubpixelLoopsFromField(
           const center = 0.25 * (vTL + vTR + vBR + vBL);
           if (center >= iso) {
             push(top, right);
-            push(left, bottom);
+            push(bottom, left);
           } else {
             push(top, left);
             push(bottom, right);
@@ -227,7 +230,7 @@ export function buildRegionSubpixelField(
 function stitchSegmentsToLoops(
   segments: Array<{ ax: number; ay: number; bx: number; by: number }>
 ): SubpixelBoundaryLoop[] {
-  const keyOf = (x: number, y: number) => `${Math.round(x * 1000)},${Math.round(y * 1000)}`;
+  const keyOf = (x: number, y: number) => `${Math.round(x * 100)},${Math.round(y * 100)}`;
   const outgoing = new Map<string, number[]>();
   for (let i = 0; i < segments.length; i++) {
     const k = keyOf(segments[i].ax, segments[i].ay);
@@ -243,7 +246,9 @@ function stitchSegmentsToLoops(
     if (used[start]) continue;
     const pts: Point2D[] = [];
     let cur = start;
-    const startKey = keyOf(segments[start].ax, segments[start].ay);
+    const startSeg = segments[start];
+    const startKey = keyOf(startSeg.ax, startSeg.ay);
+    let closedCleanly = false;
 
     for (let guard = 0; guard < segments.length + 2; guard++) {
       if (used[cur]) break;
@@ -251,21 +256,42 @@ function stitchSegmentsToLoops(
       const seg = segments[cur];
       pts.push({ x: seg.ax, y: seg.ay });
       const nextKey = keyOf(seg.bx, seg.by);
-      if (nextKey === startKey) break;
+      if (nextKey === startKey) {
+        closedCleanly = true;
+        break;
+      }
       const candidates = outgoing.get(nextKey);
-      if (!candidates) break;
       let nextIdx = -1;
-      for (const cand of candidates) {
-        if (!used[cand]) {
-          nextIdx = cand;
-          break;
+      if (candidates) {
+        for (const cand of candidates) {
+          if (!used[cand]) {
+            nextIdx = cand;
+            break;
+          }
         }
       }
-      if (nextIdx < 0) break;
+      // Se houve empate de arredondamento na grade de 0.01 px, busca segmento não usado a <= 0.05 px
+      if (nextIdx < 0) {
+        let bestD = 0.05;
+        for (let k = 0; k < segments.length; k++) {
+          if (used[k]) continue;
+          const d = Math.hypot(segments[k].ax - seg.bx, segments[k].ay - seg.by);
+          if (d < bestD) {
+            bestD = d;
+            nextIdx = k;
+          }
+        }
+      }
+      if (nextIdx < 0) {
+        if (Math.hypot(seg.bx - startSeg.ax, seg.by - startSeg.ay) <= 1.2) {
+          closedCleanly = true;
+        }
+        break;
+      }
       cur = nextIdx;
     }
 
-    if (pts.length >= 3) {
+    if (pts.length >= 3 && closedCleanly) {
       const area = signedArea(pts);
       if (Math.abs(area) >= 1) {
         loops.push({

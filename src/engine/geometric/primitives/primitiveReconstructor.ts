@@ -180,19 +180,42 @@ export function primitiveToSvgElement(
 
 function validateAgainstMask(
   svgElement: string,
-  mask: MaskValidationInput
+  mask: MaskValidationInput,
+  boundaryPoints?: Point2D[]
 ): MaskValidationMetrics {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${mask.width}" height="${mask.height}" viewBox="0 0 ${mask.width} ${mask.height}">${svgElement}</svg>`;
+  let x0 = 0;
+  let y0 = 0;
+  let cw = mask.width;
+  let ch = mask.height;
+  if (boundaryPoints && boundaryPoints.length > 0) {
+    let minX = mask.width;
+    let minY = mask.height;
+    let maxX = 0;
+    let maxY = 0;
+    for (const p of boundaryPoints) {
+      if (p.x < minX) minX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y > maxY) maxY = p.y;
+    }
+    x0 = Math.max(0, Math.floor(minX) - 4);
+    y0 = Math.max(0, Math.floor(minY) - 4);
+    const x1 = Math.min(mask.width, Math.ceil(maxX) + 4);
+    const y1 = Math.min(mask.height, Math.ceil(maxY) + 4);
+    cw = Math.max(2, x1 - x0);
+    ch = Math.max(2, y1 - y0);
+  }
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${cw}" height="${ch}" viewBox="${x0} ${y0} ${cw} ${ch}">${svgElement}</svg>`;
   const rendered = new Resvg(svg, {
-    fitTo: { mode: 'width', value: mask.width },
+    fitTo: { mode: 'width', value: cw },
   }).render();
-  const w = mask.width;
+  const fullW = mask.width;
   const pixels = rendered.pixels;
   return maskIoU(
-    mask.width,
-    mask.height,
-    (x, y) => mask.referenceMask[y * w + x] === 1,
-    (x, y) => pixels[(y * w + x) * 4 + 3] >= 128
+    cw,
+    ch,
+    (x, y) => mask.referenceMask[(y + y0) * fullW + (x + x0)] === 1,
+    (x, y) => pixels[(y * cw + x) * 4 + 3] >= 128
   );
 }
 
@@ -356,7 +379,7 @@ export function reconstructClosedContourPrimitive(
 
     let maskMetrics: MaskValidationMetrics | undefined;
     if (maskValidation) {
-      maskMetrics = validateAgainstMask(svgElement, maskValidation);
+      maskMetrics = validateAgainstMask(svgElement, maskValidation, boundaryPoints);
       const minIoU = maskValidation.minIoU ?? geometricAcceptance.coverage.iouSolid;
       const minRecall = maskValidation.minRecall ?? geometricAcceptance.coverage.recallDetail;
       if (maskMetrics.iou < minIoU || maskMetrics.recall < minRecall) {

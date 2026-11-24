@@ -33,6 +33,7 @@
     "test:geometric-structure": "tsx scripts/test-geometric-structure.ts",
     "test:geometric-curves": "tsx scripts/test-geometric-curves.ts",
     "test:geometric-appearance": "tsx scripts/test-geometric-appearance.ts",
+    "test:geometric-integration": "tsx scripts/test-geometric-integration.ts",
     "test:e2e": "tsx scripts/test-e2e-browser-inkscape.ts",
     "test": "npm run verify:tools && npm run test:bird && npm run test:categories && npm run test:universal && npm run test:stage2 && npm run test:contours && npm run test:background && npm run test:noise && npm run test:boundaries && npm run test:strokes && npm run test:geometry && npm run test:gradients && npm run test:quality && npm run test:audit && npm run test:coverage && npm run test:holes && npm run test:zoom-precision && npm run test:tonal && npm run test:selection && npm run test:final && npm run test:geometric-contract && npm run test:e2e"
   },

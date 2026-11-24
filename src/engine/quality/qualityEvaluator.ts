@@ -3,12 +3,14 @@ import type {
   DetectedImageCategory,
   QualityComparisonReport,
   RawRgbaImage,
+  VectorEngineKind,
 } from '../types';
 import { deltaECiede2000FromLab } from '../color/perceptualColor';
 import { computeExactEuclideanDistanceTransform } from '../stage2/stage2Diagnostics';
 import { renderSvgSupersampled } from '../stage2/supersampledSvgRenderer';
 import { validateSvgStructure } from '../validation/fileValidator';
 import { isAuditActive, noteCandidate, noteSelection } from '../audit/pipelineAudit';
+import { continuityOfPath } from '../geometric/contract/geometricContract';
 
 /**
  * Rasteriza o SVG gerado com Supersampling (`2×`) e integração de área pré-multiplicada
@@ -447,7 +449,7 @@ export async function evaluateSvgVisualQuality(
 export interface VectorSvgCandidateInput {
   candidateId: string;
   label: string;
-  engineKind: 'opencv_bezier_gradients' | 'vtracer_rek_gradients' | 'potrace_bezier';
+  engineKind: VectorEngineKind;
   svg: string;
 }
 
@@ -536,8 +538,9 @@ export async function evaluateAndSelectBestCandidate(
 
   const structList = candidates.map((cand) => validateSvgStructure(cand.svg));
   const minValidPathCount = structList.reduce((acc, s) => {
-    if (!s.valid || s.hasEmbeddedRaster || s.pathCount <= 0) return acc;
-    return Math.min(acc, s.pathCount);
+    const elems = s.totalVectorElements > 0 ? s.totalVectorElements : s.pathCount;
+    if (!s.valid || s.hasEmbeddedRaster || elems <= 0) return acc;
+    return Math.min(acc, elems);
   }, Number.POSITIVE_INFINITY);
 
   for (let cIdx = 0; cIdx < candidates.length; cIdx++) {
@@ -552,6 +555,14 @@ export async function evaluateAndSelectBestCandidate(
     reports.push(q);
     if (!q) continue;
 
+    // Inspeciona continuidade geométrica G1 nos caminhos do candidato
+    const allPathD = [...cand.svg.matchAll(/\bd="([^"]+)"/g)].map((m) => m[1]).join(' ');
+    const g1Stats = allPathD ? continuityOfPath(allPathD) : { unintendedG1Breaks: 0, maxSmoothTurnDeg: 0 };
+    const g1Penalty =
+      g1Stats.unintendedG1Breaks > 0
+        ? Math.min(4.5, g1Stats.unintendedG1Breaks * 0.12)
+        : 0;
+
     // Pontuação composta perceptual + estrutural (valoriza gradientes nativos reais, topologia limpa e penaliza fragmentação de anti-aliasing)
     const nativeGradBonus =
       sourceGradientRatio >= 0.2 && struct.gradientCount >= 1 && struct.gradientCount <= 8
@@ -561,17 +572,18 @@ export async function evaluateAndSelectBestCandidate(
     const tonalImage =
       category === 'gradient_logo' || category === 'metallic_lighting' || sourceGradientRatio >= 0.18;
     const delta = q.meanDeltaE2000 ?? q.meanDeltaELab;
+    const elemCount = struct.totalVectorElements > 0 ? struct.totalVectorElements : struct.pathCount;
     const relativeBloatRatio =
       Number.isFinite(minValidPathCount) && minValidPathCount > 0
-        ? struct.pathCount / Math.max(4, minValidPathCount)
+        ? elemCount / Math.max(4, minValidPathCount)
         : 1;
     const relativeFragmentationPenalty =
       relativeBloatRatio > 3.2 ? Math.min(4.5, (relativeBloatRatio - 3.2) * 0.38) : 0;
 
     const fragmentationThreshold = sourceGradientRatio >= 0.2 ? 220 : 1200;
     const excessiveFragmentationPenalty =
-      (struct.pathCount > fragmentationThreshold
-        ? Math.min(8.5, (struct.pathCount - fragmentationThreshold) / 95)
+      (elemCount > fragmentationThreshold
+        ? Math.min(8.5, (elemCount - fragmentationThreshold) / 95)
         : 0) + relativeFragmentationPenalty;
 
     // Penaliza perda localizada de detalhes (ex.: estrela/olho apagado que eleva Hausdorff mesmo com média global alta!)
@@ -596,7 +608,8 @@ export async function evaluateAndSelectBestCandidate(
         (q.iouPct ?? 0) * weights.iou +
         nativeGradBonus -
         excessiveFragmentationPenalty -
-        localizedDefectPenalty
+        localizedDefectPenalty -
+        g1Penalty
       ).toFixed(2)
     );
 
@@ -609,8 +622,11 @@ export async function evaluateAndSelectBestCandidate(
       gradientContinuityPct: q.gradientContinuityPct,
       compositeScore,
       objectCount: struct.objectCount,
-      pathCount: struct.pathCount,
+      pathCount: elemCount,
       gradientCount: struct.gradientCount,
+      iouPct: q.iouPct,
+      hausdorffPx: q.hausdorffDistancePx,
+      unintendedG1Breaks: g1Stats.unintendedG1Breaks,
       rejected: rejection !== null,
       reason: rejection ?? undefined,
     });

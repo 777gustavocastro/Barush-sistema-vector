@@ -187,9 +187,14 @@ export function classifyAppearance(samples: TonalSample[]): { appearance: Appear
   for (const sample of samples) variance += (sample.luminance - mean) ** 2;
   const std = Math.sqrt(variance / samples.length);
   const plane = fitPlane(samples);
-  const highlightSamples = samples.filter((sample) => sample.luminance > mean + Math.max(28, std * 1.4));
+  const highlightSamples =
+    plane.residual > 14
+      ? samples.filter((sample) => sample.luminance > mean + Math.max(32, std * 1.6))
+      : [];
   const highlight =
-    highlightSamples.length > 8 && highlightSamples.length < samples.length * 0.22 ? compactHighlight(highlightSamples) : null;
+    highlightSamples.length > 8 && highlightSamples.length < samples.length * 0.2
+      ? compactHighlight(highlightSamples)
+      : null;
   const base = highlight ? samples.filter((sample) => sample.luminance <= mean + Math.max(28, std * 1.4)) : samples;
   const basePlane = highlight ? fitPlane(base) : plane;
   const baseStd = stdOf(base);

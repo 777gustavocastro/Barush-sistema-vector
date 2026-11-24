@@ -68,6 +68,13 @@ export interface PipelineAuditReport {
     compound: number;
     wideSpanKeptSolid: number;
   };
+  coverage: {
+    regionsChecked: number;
+    strokesRejected: number;
+    fillsRebuilt: number;
+    worstRecall: number;
+    missingComponents: number;
+  };
   candidates: CandidateAuditRow[];
 }
 
@@ -124,6 +131,13 @@ export function beginPipelineAudit(): void {
         radial: 0,
         compound: 0,
         wideSpanKeptSolid: 0,
+      },
+      coverage: {
+        regionsChecked: 0,
+        strokesRejected: 0,
+        fillsRebuilt: 0,
+        worstRecall: 1,
+        missingComponents: 0,
       },
       candidates: [],
     },
@@ -265,6 +279,21 @@ export function noteFill(kind: string, colorSpan: number, meanDeltaE: number): v
     slot.solid++;
     if (colorSpan > 12 && meanDeltaE > 2.2) slot.wideSpanKeptSolid++;
   }
+}
+
+export function noteRegionCoverage(input: {
+  recall: number;
+  missingComponents?: number;
+  strokeRejected?: boolean;
+  fillRebuilt?: boolean;
+}): void {
+  if (!session) return;
+  const slot = session.report.coverage;
+  slot.regionsChecked++;
+  if (input.strokeRejected) slot.strokesRejected++;
+  if (input.fillRebuilt) slot.fillsRebuilt++;
+  if (input.recall < slot.worstRecall) slot.worstRecall = round2(input.recall);
+  slot.missingComponents += input.missingComponents ?? 0;
 }
 
 export function noteCandidate(row: CandidateAuditRow): void {

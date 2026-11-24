@@ -18,6 +18,13 @@ import {
 import { buildRegionRelationGraph } from '../topology/regionRelationGraph';
 import { restoreOccludedRectangles } from '../topology/occlusionCompletion';
 import { buildUniformContourStroke } from '../geometry/contourStrokeBuilder';
+import {
+  measureFillCoverage,
+  measureStrokeCoverage,
+  recordCoverage,
+  recoverRegionFillFromMask,
+  strokeCoversMask,
+} from '../geometry/regionCoverage';
 import type { AdaptiveCurveFitOptions } from '../geometry/adaptiveBezierFitter';
 import { buildExactTypographyInkMask } from '../typography/typographyProcessor';
 import type {
@@ -498,8 +505,7 @@ export async function reconstructImageAsEditableObjects(
 
       pathCounter++;
       const mainPathId = `caminho-${pathCounter}`;
-      const evenOddAttr = geom.usesEvenOdd ? ' fill-rule="evenodd"' : '';
-      const contourStroke =
+      let contourStroke =
         fit.kind === 'solid' &&
         !keepAsShadow &&
         !sub.isSemiTransparent &&
@@ -507,6 +513,67 @@ export async function reconstructImageAsEditableObjects(
         sub.pixelCount / Math.max(1, Math.max(sub.maxX - sub.minX, sub.maxY - sub.minY)) <= 14
           ? buildUniformContourStroke(decomposition.regionIdMap, sub.id, width, height) ?? undefined
           : undefined;
+      let strokeRejected = false;
+      if (contourStroke) {
+        const strokeCoverage = measureStrokeCoverage(
+          decomposition.regionIdMap,
+          sub.id,
+          width,
+          height,
+          contourStroke
+        );
+        if (!strokeCoversMask(strokeCoverage, contourStroke.strokeWidth)) {
+          contourStroke = undefined;
+          strokeRejected = true;
+        } else {
+          recordCoverage(strokeCoverage);
+        }
+      }
+
+      let pathD = geom.pathD;
+      let usesEvenOdd = geom.usesEvenOdd;
+      let holeLoopCount = geom.holeLoopCount;
+      if (!contourStroke) {
+        const fillCoverage = measureFillCoverage(
+          decomposition.regionIdMap,
+          sub.id,
+          width,
+          height,
+          pathD,
+          usesEvenOdd
+        );
+        const fillIncomplete = fillCoverage.recall < 0.96 || fillCoverage.missingComponents > 0;
+        if (fillIncomplete) {
+          const recovered = recoverRegionFillFromMask({
+            labelMap: decomposition.regionIdMap,
+            regionId: sub.id,
+            width,
+            height,
+            minX: sub.minX,
+            minY: sub.minY,
+            maxX: sub.maxX,
+            maxY: sub.maxY,
+            curveOptions,
+          });
+          const recoveredBetter =
+            recovered !== null &&
+            recovered.coverage.recall + 0.005 >= fillCoverage.recall &&
+            recovered.coverage.excessPixels <=
+              fillCoverage.excessPixels + Math.max(4, Math.round(sub.pixelCount * 0.02)) &&
+            recovered.coverage.missingComponents <= fillCoverage.missingComponents;
+          if (recovered && recoveredBetter) {
+            pathD = recovered.d;
+            usesEvenOdd = recovered.usesEvenOdd;
+            holeLoopCount = recovered.holeCount;
+            recordCoverage(recovered.coverage, { fillRebuilt: true, strokeRejected });
+          } else {
+            recordCoverage(fillCoverage, { strokeRejected });
+          }
+        } else {
+          recordCoverage(fillCoverage, { strokeRejected });
+        }
+      }
+      const evenOddAttr = usesEvenOdd ? ' fill-rule="evenodd"' : '';
 
       let recordedFillKind: SceneRegionNode['fillKind'] = fit.kind;
       let extraDefsXml = '';
@@ -519,7 +586,7 @@ export async function reconstructImageAsEditableObjects(
         pathCounter++;
         recordedFillKind = 'compound';
         extraDefsXml = fit.overlayLayer.defsXml ?? '';
-        extraElementsXml = `<path id="caminho-${pathCounter}" data-natureza="iluminacao-composta" fill="${fit.overlayLayer.fillValue}"${evenOddAttr} d="${geom.pathD}"/>`;
+        extraElementsXml = `<path id="caminho-${pathCounter}" data-natureza="iluminacao-composta" fill="${fit.overlayLayer.fillValue}"${evenOddAttr} d="${pathD}"/>`;
         extraPathCount = 1;
         extraGradientCount = fit.overlayLayer.defsXml ? 1 : 0;
       } else if (
@@ -532,8 +599,8 @@ export async function reconstructImageAsEditableObjects(
       ) {
         const subdiv = buildClippedSubdivisionForComplexRegion(
           sub,
-          geom.pathD,
-          geom.usesEvenOdd,
+          pathD,
+          usesEvenOdd,
           decomposition,
           curveOptions,
           `sub-${obj.objectId}-${sIdx + 1}`
@@ -554,9 +621,9 @@ export async function reconstructImageAsEditableObjects(
         parentObjectId: obj.objectId,
         svgPathId: mainPathId,
         sub,
-        pathD: geom.pathD,
-        usesEvenOdd: geom.usesEvenOdd,
-        holeLoopCount: geom.holeLoopCount,
+        pathD,
+        usesEvenOdd,
+        holeLoopCount,
         fillKind: recordedFillKind,
         fillValue: fit.fillValue,
         fillOpacity: fit.fillOpacity,

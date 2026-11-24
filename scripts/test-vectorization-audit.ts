@@ -193,6 +193,7 @@ async function main() {
     lines.push(`- OpenCV: ${opencv ? `${opencv.pathCount} caminhos, SSIM ${opencv.ssimPct}, ΔE₀₀ ${opencv.deltaE2000}, contorno ${opencv.contourFidelityPct}%, IoU ${opencv.iouPct}%` : 'ausente'}.`);
     lines.push(`- VTracer: ${vtracer ? `${vtracer.pathCount} caminhos, SSIM ${vtracer.ssimPct}, ΔE₀₀ ${vtracer.deltaE2000}, contorno ${vtracer.contourFidelityPct}%, IoU ${vtracer.iouPct}%` : 'ausente'}.`);
     lines.push(`- Escolhido: ${selected?.candidateId ?? result.engineUsed}, ${result.validation.pathCount} caminhos.`);
+    lines.push(`- Cobertura da máscara: pior recall ${audit.coverage.worstRecall}, traços recusados ${audit.coverage.strokesRejected}, preenchimentos reconstruídos ${audit.coverage.fillsRebuilt}, componentes ausentes ${audit.coverage.missingComponents}.`);
     lines.push(`- Problemas: ${problems.join(' ')}`);
     lines.push('');
   }

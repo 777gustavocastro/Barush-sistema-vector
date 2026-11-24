@@ -1,6 +1,5 @@
 import {
   fitAdaptiveBezierChain,
-  regularizeSubpixelChainPoints,
   reverseFittedBezierChain,
   serializeChainsLoopToPathD,
   tuckInternalChainUnderOpaqueNeighbor,
@@ -522,13 +521,7 @@ export function buildPlanarSharedTopology(
         true,
         subpixelInput
       );
-      const reg = regularizeSubpixelChainPoints(
-        basePts,
-        targetPts,
-        true,
-        curveOptions.subpixelTubeRadiusPx ?? 0.48
-      );
-      return fitAdaptiveBezierChain(basePts, reg, true, curveOptions);
+      return fitAdaptiveBezierChain(basePts, targetPts, true, curveOptions);
     }
 
     const rMin = Math.min(inside, outside);

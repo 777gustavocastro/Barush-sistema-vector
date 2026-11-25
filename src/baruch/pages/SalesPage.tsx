@@ -106,8 +106,8 @@ export function SalesPage({ sales, onRegisterSale }: SalesPageProps) {
 
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-5">
         {/* Catálogo rápido para adicionar ao pedido */}
-        <section className="xl:col-span-7 bg-white border border-[#E4EAF1] rounded-lg overflow-hidden">
-          <div className="px-4 py-3 border-b border-[#EEF2F7] flex items-center justify-between">
+        <section className="xl:col-span-7">
+          <div className="mb-2 flex items-center justify-between">
             <h3 className="text-[13.5px] font-semibold text-[#071A34]">
               Selecionar produtos
             </h3>
@@ -115,7 +115,7 @@ export function SalesPage({ sales, onRegisterSale }: SalesPageProps) {
               Clique para adicionar à venda
             </span>
           </div>
-          <div className="divide-y divide-[#F1F5F9]">
+          <div className="bg-white border border-[#E4EAF1] rounded-lg overflow-hidden divide-y divide-[#F1F5F9]">
             {PRODUCTS.map((product) => (
               <div
                 key={product.id}
@@ -289,12 +289,11 @@ export function SalesPage({ sales, onRegisterSale }: SalesPageProps) {
       </div>
 
       {/* Histórico de vendas */}
-      <section className="bg-white border border-[#E4EAF1] rounded-lg overflow-hidden">
-        <div className="px-4 py-3 border-b border-[#EEF2F7]">
-          <h3 className="text-[13.5px] font-semibold text-[#071A34]">
-            Registro de vendas
-          </h3>
-        </div>
+      <section>
+        <h3 className="text-[13.5px] font-semibold text-[#071A34] mb-2">
+          Registro de vendas
+        </h3>
+        <div className="bg-white border border-[#E4EAF1] rounded-lg overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
@@ -326,6 +325,7 @@ export function SalesPage({ sales, onRegisterSale }: SalesPageProps) {
               ))}
             </tbody>
           </table>
+        </div>
         </div>
       </section>
     </div>

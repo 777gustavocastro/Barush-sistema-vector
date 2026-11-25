@@ -56,7 +56,7 @@ export function Topbar({
   }, []);
 
   return (
-    <header className="sticky top-0 z-20 h-14 bg-white/95 backdrop-blur-sm border-b border-[#E4EAF1] px-6 flex items-center justify-between gap-4">
+    <header className="sticky top-0 z-20 h-14 bg-[#F6F8FB] px-6 flex items-center justify-between gap-4">
       {/* Título da página + Breadcrumb discreto */}
       <div className="flex items-center gap-2 min-w-0">
         <h1 className="text-[15px] font-semibold text-[#071A34] tracking-[-0.01em] truncate">
@@ -83,7 +83,7 @@ export function Topbar({
             value={globalSearch}
             onChange={(e) => onGlobalSearchChange(e.target.value)}
             placeholder="Buscar cliente, pedido ou arquivo..."
-            className="w-full h-8 pl-8 pr-11 rounded-md bg-[#F6F8FB] border border-[#E4EAF1] text-[12.5px] text-[#0F1E36] placeholder:text-slate-400 focus:outline-none focus:bg-white focus:border-[#071A34]/35 transition-colors"
+            className="w-full h-8 pl-8 pr-11 rounded-lg bg-white border border-[#E4EAF1] text-[12.5px] text-[#0F1E36] placeholder:text-slate-400 focus:outline-none focus:border-[#071A34]/35 transition-colors"
           />
           {globalSearch ? (
             <button
@@ -165,8 +165,6 @@ export function Topbar({
             </div>
           )}
         </div>
-
-        <div className="h-4 w-px bg-[#E4EAF1] mx-0.5" aria-hidden="true" />
 
         {/* Perfil do usuário */}
         <button

@@ -87,49 +87,50 @@ export function ChatProjectsPage({
   };
 
   return (
-    <div className="bg-white border border-[#E4EAF1] rounded-lg overflow-hidden grid grid-cols-1 lg:grid-cols-12 min-h-[calc(100vh-8.5rem)]">
+    <div className="flex flex-col min-h-[calc(100vh-8.5rem)]">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <div>
+          <h2 className="text-[13.5px] font-semibold text-[#071A34]">
+            Projetos por cliente
+          </h2>
+          <p className="text-[11.5px] text-[#5A6B82]">
+            {filteredThreads.length} projeto(s) ativo(s)
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            const id = `prj-${Date.now()}`;
+            const created: ProjectThread = {
+              id,
+              clientId: 'cli-1',
+              clientName: 'Construtora Horizonte',
+              title: 'Nova Arte Personalizada',
+              productRef: 'Especificação sob demanda',
+              status: 'em_criacao',
+              updatedAt: 'Agora',
+              messages: [
+                {
+                  id: `ai-${Date.now()}`,
+                  sender: 'ai',
+                  text: 'Projeto iniciado. Informe o formato, substrato ou envie uma referência para gerar a arte e fechar o arquivo de impressão.',
+                  time: 'Agora',
+                },
+              ],
+            };
+            setThreads((prev) => [created, ...prev]);
+            setSelectedId(id);
+          }}
+          className="h-7 px-2.5 rounded-md bg-[#071A34] text-white text-[12px] font-medium hover:bg-[#0D284D] transition-colors inline-flex items-center gap-1"
+        >
+          <Plus className="w-3.5 h-3.5 text-[#E3C16F]" />
+          Novo
+        </button>
+      </div>
+
+    <div className="bg-white border border-[#E4EAF1] rounded-lg overflow-hidden grid grid-cols-1 lg:grid-cols-12 flex-1 min-h-0">
       {/* Lista de projetos por cliente */}
       <aside className="lg:col-span-4 xl:col-span-3 border-b lg:border-b-0 lg:border-r border-[#EEF2F7] flex flex-col">
-        <div className="px-4 py-3 border-b border-[#EEF2F7] flex items-center justify-between">
-          <div>
-            <h2 className="text-[13.5px] font-semibold text-[#071A34]">
-              Projetos por cliente
-            </h2>
-            <p className="text-[11.5px] text-[#5A6B82]">
-              {filteredThreads.length} projeto(s) ativo(s)
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => {
-              const id = `prj-${Date.now()}`;
-              const created: ProjectThread = {
-                id,
-                clientId: 'cli-1',
-                clientName: 'Construtora Horizonte',
-                title: 'Nova Arte Personalizada',
-                productRef: 'Especificação sob demanda',
-                status: 'em_criacao',
-                updatedAt: 'Agora',
-                messages: [
-                  {
-                    id: `ai-${Date.now()}`,
-                    sender: 'ai',
-                    text: 'Projeto iniciado. Informe o formato, substrato ou envie uma referência para gerar a arte e fechar o arquivo de impressão.',
-                    time: 'Agora',
-                  },
-                ],
-              };
-              setThreads((prev) => [created, ...prev]);
-              setSelectedId(id);
-            }}
-            className="h-7 px-2.5 rounded-md bg-[#071A34] text-white text-[12px] font-medium hover:bg-[#0D284D] transition-colors inline-flex items-center gap-1"
-          >
-            <Plus className="w-3.5 h-3.5 text-[#E3C16F]" />
-            Novo
-          </button>
-        </div>
-
         <div className="divide-y divide-[#F1F5F9] overflow-y-auto flex-1">
           {filteredThreads.map((thread) => {
             const isSelected = thread.id === activeThread?.id;
@@ -176,7 +177,7 @@ export function ChatProjectsPage({
       <section className="lg:col-span-8 xl:col-span-9 flex flex-col bg-[#FAFBFD]">
         {activeThread && (
           <>
-            <div className="px-5 py-3 bg-white border-b border-[#EEF2F7] flex flex-wrap items-center justify-between gap-2">
+            <div className="px-5 pt-4 pb-2 flex flex-wrap items-center justify-between gap-2">
               <div className="min-w-0">
                 <div className="text-[14px] font-semibold text-[#071A34] truncate">
                   {activeThread.title}
@@ -257,6 +258,7 @@ export function ChatProjectsPage({
           </>
         )}
       </section>
+    </div>
     </div>
   );
 }

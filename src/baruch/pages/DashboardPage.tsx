@@ -131,8 +131,8 @@ export function DashboardPage({
       {/* Área operacional principal: Fila de produção + Últimas vendas e atalhos */}
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
         {/* Pedidos em andamento */}
-        <section className="xl:col-span-2 bg-white border border-[#E4EAF1] rounded-lg overflow-hidden">
-          <div className="px-4 py-3 border-b border-[#EEF2F7] flex items-center justify-between">
+        <section className="xl:col-span-2">
+          <div className="mb-2 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <CalendarClock className="w-4 h-4 text-[#071A34]" strokeWidth={1.75} />
               <h3 className="text-[13.5px] font-semibold text-[#071A34]">
@@ -149,6 +149,7 @@ export function DashboardPage({
             </button>
           </div>
 
+          <div className="bg-white border border-[#E4EAF1] rounded-lg overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
               <thead>
@@ -200,12 +201,13 @@ export function DashboardPage({
               </tbody>
             </table>
           </div>
+          </div>
         </section>
 
         {/* Coluna lateral: Vendas recentes + Acessos diretos */}
         <div className="space-y-5">
-          <section className="bg-white border border-[#E4EAF1] rounded-lg overflow-hidden">
-            <div className="px-4 py-3 border-b border-[#EEF2F7] flex items-center justify-between">
+          <section>
+            <div className="mb-2 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <ShoppingBag className="w-4 h-4 text-[#071A34]" strokeWidth={1.75} />
                 <h3 className="text-[13.5px] font-semibold text-[#071A34]">
@@ -222,7 +224,7 @@ export function DashboardPage({
               </button>
             </div>
 
-            <div className="divide-y divide-[#F1F5F9]">
+            <div className="bg-white border border-[#E4EAF1] rounded-lg overflow-hidden divide-y divide-[#F1F5F9]">
               {sales.slice(0, 4).map((sale) => (
                 <div
                   key={sale.id}
@@ -244,11 +246,11 @@ export function DashboardPage({
             </div>
           </section>
 
-          <section className="bg-white border border-[#E4EAF1] rounded-lg p-4">
-            <div className="text-[12px] font-semibold uppercase tracking-[0.06em] text-[#5A6B82] mb-2.5">
+          <section>
+            <div className="text-[12px] font-semibold uppercase tracking-[0.06em] text-[#5A6B82] mb-2">
               Acesso rápido
             </div>
-            <div className="space-y-1.5">
+            <div className="bg-white border border-[#E4EAF1] rounded-lg p-2 space-y-1">
               <button
                 type="button"
                 onClick={() => onNavigate('chat_projects')}

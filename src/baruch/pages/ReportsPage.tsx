@@ -86,8 +86,8 @@ export function ReportsPage() {
       </div>
 
       {/* Gráfico limpo de Receita vs Custos */}
-      <section className="bg-white border border-[#E4EAF1] rounded-lg p-5">
-        <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+      <section>
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
           <div>
             <h3 className="text-[13.5px] font-semibold text-[#071A34]">
               Evolução mensal — Vendas e custos
@@ -108,7 +108,8 @@ export function ReportsPage() {
           </div>
         </div>
 
-        <div className="grid grid-cols-6 gap-4 items-end h-44 pt-4">
+        <div className="bg-white border border-[#E4EAF1] rounded-lg px-5 pt-4 pb-3">
+        <div className="grid grid-cols-6 gap-4 items-end h-40">
           {MONTHLY_SERIES.map((item) => {
             const revH = Math.round((item.revenue / maxVal) * 100);
             const costH = Math.round((item.cost / maxVal) * 100);
@@ -133,17 +134,16 @@ export function ReportsPage() {
             );
           })}
         </div>
+        </div>
       </section>
 
       {/* Ranking de produtos e clientes */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <section className="bg-white border border-[#E4EAF1] rounded-lg overflow-hidden">
-          <div className="px-4 py-3 border-b border-[#EEF2F7]">
-            <h3 className="text-[13.5px] font-semibold text-[#071A34]">
-              Rentabilidade por produto
-            </h3>
-          </div>
-          <div className="divide-y divide-[#F1F5F9]">
+        <section>
+          <h3 className="text-[13.5px] font-semibold text-[#071A34] mb-2">
+            Rentabilidade por produto
+          </h3>
+          <div className="bg-white border border-[#E4EAF1] rounded-lg overflow-hidden divide-y divide-[#F1F5F9]">
             {PRODUCTS.slice(0, 5).map((p) => {
               const marginPct = Math.round(((p.price - p.cost) / p.price) * 100);
               return (
@@ -165,13 +165,11 @@ export function ReportsPage() {
           </div>
         </section>
 
-        <section className="bg-white border border-[#E4EAF1] rounded-lg overflow-hidden">
-          <div className="px-4 py-3 border-b border-[#EEF2F7]">
-            <h3 className="text-[13.5px] font-semibold text-[#071A34]">
-              Principais clientes no período
-            </h3>
-          </div>
-          <div className="divide-y divide-[#F1F5F9]">
+        <section>
+          <h3 className="text-[13.5px] font-semibold text-[#071A34] mb-2">
+            Principais clientes no período
+          </h3>
+          <div className="bg-white border border-[#E4EAF1] rounded-lg overflow-hidden divide-y divide-[#F1F5F9]">
             {[...CLIENTS]
               .sort((a, b) => b.totalSpent - a.totalSpent)
               .map((c) => (

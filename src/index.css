@@ -35,6 +35,12 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Botões um pouco mais arredondados, sem alterar o restante dos controles */
+button.rounded-md,
+button.rounded {
+  border-radius: 0.625rem;
+}
+
 /* Scrollbar discreta para software desktop */
 ::-webkit-scrollbar {
   width: 7px;

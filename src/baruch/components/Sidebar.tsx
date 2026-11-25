@@ -42,11 +42,24 @@ export function Sidebar({
       >
         <button
           type="button"
-          onClick={() => onSelectPage('dashboard')}
-          className="flex items-center gap-2.5 min-w-0 text-left focus:outline-none group"
-          title="BARUCH — Ir para Dashboard"
+          onClick={() => (collapsed ? onToggleCollapse() : onSelectPage('dashboard'))}
+          className="relative flex items-center gap-2.5 min-w-0 text-left focus:outline-none group/brand"
+          title={collapsed ? 'Expandir menu' : 'BARUCH — Ir para Dashboard'}
+          aria-label={collapsed ? 'Expandir menu lateral' : 'Ir para Dashboard'}
         >
-          <BaruchLogo size={30} className="shrink-0" />
+          <span className="relative shrink-0 w-[30px] h-[30px]">
+            <BaruchLogo
+              size={30}
+              className={`absolute inset-0 transition-opacity duration-150 ${
+                collapsed ? 'group-hover/brand:opacity-0' : ''
+              }`}
+            />
+            {collapsed && (
+              <span className="absolute inset-0 flex items-center justify-center rounded-lg text-[#E3C16F] opacity-0 group-hover/brand:opacity-100 transition-opacity duration-150">
+                <PanelLeftOpen className="w-4 h-4" strokeWidth={1.75} />
+              </span>
+            )}
+          </span>
           {!collapsed && (
             <div className="min-w-0">
               <div className="flex items-center gap-1.5">
@@ -74,21 +87,6 @@ export function Sidebar({
           </button>
         )}
       </div>
-
-      {/* Botão de expandir quando recolhido */}
-      {collapsed && (
-        <div className="flex justify-center pt-2.5 pb-1">
-          <button
-            type="button"
-            onClick={onToggleCollapse}
-            className="p-1.5 rounded-md text-slate-400 hover:text-white hover:bg-white/[0.07] transition-colors"
-            title="Expandir menu"
-            aria-label="Expandir menu lateral"
-          >
-            <PanelLeftOpen className="w-4 h-4" strokeWidth={1.75} />
-          </button>
-        </div>
-      )}
 
       {/* Navegação principal */}
       <nav className="flex-1 overflow-y-auto overflow-x-hidden sidebar-scroll px-2.5 py-3 space-y-0.5">

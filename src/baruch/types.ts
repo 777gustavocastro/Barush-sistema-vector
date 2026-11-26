@@ -29,18 +29,37 @@ export interface ClientRecord {
   lastActivity: string;
 }
 
+export type ProductCategory =
+  | 'Impressão gráfica'
+  | 'Personalização'
+  | 'Comunicação visual'
+  | 'Personalização a laser'
+  | 'Uniformes'
+  | 'Outros';
+
+export type ProductStatus = 'ativo' | 'rascunho' | 'arquivado';
+
+export type ProductConfig = 'Template' | 'Formato fixo' | 'Sob medida';
+
 export interface ProductRecord {
   id: string;
   sku: string;
   name: string;
-  category: 'Impressos' | 'Personalizados' | 'Comunicação Visual' | 'Embalagens';
+  category: ProductCategory;
   templateName: string;
+  templateCount: number;
   dimensions: string;
+  proportion?: string;
   printArea: string;
   cost: number;
   price: number;
   productionHours: number;
   active: boolean;
+  status: ProductStatus;
+  config: ProductConfig;
+  summary: string;
+  hasImage: boolean;
+  tone: string;
 }
 
 export type ProductionStatus =

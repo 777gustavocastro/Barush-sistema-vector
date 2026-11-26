@@ -10,6 +10,8 @@ import {
   Package,
   Pencil,
   Plus,
+  Printer,
+  Scaling,
   Search,
   Trash2,
 } from 'lucide-react';
@@ -27,6 +29,7 @@ import {
   validateCatalogProduct,
   type CatalogFieldErrors,
 } from '../products/catalogValidation';
+import { SelectMenu } from '../components/SelectMenu';
 import { ProductEditor, StatusPill } from '../products/ProductEditor';
 import { ProductThumb } from '../products/ProductVisuals';
 
@@ -273,67 +276,69 @@ export function ProductsPage({ globalSearch }: ProductsPageProps) {
             className={`${inputClass} w-full pl-8`}
           />
         </label>
-        <select
+        <SelectMenu
           value={category}
-          aria-label="Filtrar por categoria"
-          onChange={(event) => setCategory(event.target.value as 'todas' | ProductCategory)}
-          className={inputClass}
-        >
-          <option value="todas">Todas as categorias</option>
-          {PRODUCT_CATEGORIES.map((item) => (
-            <option key={item} value={item}>{item}</option>
-          ))}
-        </select>
-        <select
+          ariaLabel="Filtrar por categoria"
+          onChange={setCategory}
+          options={[
+            { value: 'todas', label: 'Todas as categorias' },
+            ...PRODUCT_CATEGORIES.map((item) => ({ value: item, label: item })),
+          ]}
+        />
+        <SelectMenu
           value={status}
-          aria-label="Filtrar por status"
-          onChange={(event) => setStatus(event.target.value as 'todos' | CatalogStatus)}
-          className={inputClass}
-        >
-          <option value="todos">Todos os status</option>
-          <option value="ativo">Ativos</option>
-          <option value="arquivado">Arquivados</option>
-        </select>
-        <select
+          ariaLabel="Filtrar por status"
+          onChange={setStatus}
+          options={[
+            { value: 'todos', label: 'Todos os status' },
+            { value: 'ativo', label: 'Ativos' },
+            { value: 'arquivado', label: 'Arquivados' },
+          ]}
+        />
+        <SelectMenu
           value={templates}
-          aria-label="Filtrar por templates"
-          onChange={(event) => setTemplates(event.target.value as TemplateFilter)}
-          className={inputClass}
-        >
-          <option value="todos">Templates</option>
-          <option value="com">Com templates</option>
-          <option value="sem">Sem templates</option>
-        </select>
-        <select
+          ariaLabel="Filtrar por templates"
+          onChange={setTemplates}
+          options={[
+            { value: 'todos', label: 'Templates' },
+            { value: 'com', label: 'Com templates' },
+            { value: 'sem', label: 'Sem templates' },
+          ]}
+        />
+        <SelectMenu
           value={costFilter}
-          aria-label="Filtrar por custo"
-          onChange={(event) => setCostFilter(event.target.value as CostFilter)}
-          className={inputClass}
-        >
-          <option value="todos">Custo</option>
-          <option value="com">Com custo</option>
-          <option value="sem">Sem custo</option>
-        </select>
-        <div className="ml-auto flex items-center gap-2">
-          <select
+          ariaLabel="Filtrar por custo"
+          onChange={setCostFilter}
+          options={[
+            { value: 'todos', label: 'Custo' },
+            { value: 'com', label: 'Com custo' },
+            { value: 'sem', label: 'Sem custo' },
+          ]}
+        />
+        <div className="ml-auto flex items-center gap-1.5">
+          <SelectMenu
             value={sortKey}
-            aria-label="Ordenar produtos"
-            onChange={(event) => setSortKey(event.target.value as SortKey)}
-            className={inputClass}
-          >
-            <option value="name">Nome</option>
-            <option value="category">Categoria</option>
-            <option value="cost">Custo</option>
-            <option value="price">Preço</option>
-            <option value="created">Data de cadastro</option>
-          </select>
-          <div className="flex h-9 rounded-lg border border-[#E4EAF1] bg-white p-0.5">
+            ariaLabel="Ordenar produtos"
+            onChange={setSortKey}
+            options={[
+              { value: 'name', label: 'Nome' },
+              { value: 'category', label: 'Categoria' },
+              { value: 'cost', label: 'Custo' },
+              { value: 'price', label: 'Preço' },
+              { value: 'created', label: 'Data de cadastro' },
+            ]}
+          />
+          <div className="inline-flex h-8 items-center rounded-lg bg-[#EEF2F6] p-0.5">
             <button
               type="button"
               aria-label="Visualizar em cards"
               aria-pressed={view === 'cards'}
               onClick={() => setView('cards')}
-              className={`h-8 w-8 rounded-md inline-flex items-center justify-center ${view === 'cards' ? 'bg-[#071A34] text-white' : 'text-[#5A6B82]'}`}
+              className={`h-7 w-7 rounded-md inline-flex items-center justify-center transition-colors ${
+                view === 'cards'
+                  ? 'bg-white text-[#071A34] shadow-[0_1px_2px_rgba(7,26,52,0.08)]'
+                  : 'text-[#8A98AB] hover:text-[#071A34]'
+              }`}
             >
               <LayoutGrid className="w-3.5 h-3.5" />
             </button>
@@ -342,7 +347,11 @@ export function ProductsPage({ globalSearch }: ProductsPageProps) {
               aria-label="Visualizar em lista"
               aria-pressed={view === 'list'}
               onClick={() => setView('list')}
-              className={`h-8 w-8 rounded-md inline-flex items-center justify-center ${view === 'list' ? 'bg-[#071A34] text-white' : 'text-[#5A6B82]'}`}
+              className={`h-7 w-7 rounded-md inline-flex items-center justify-center transition-colors ${
+                view === 'list'
+                  ? 'bg-white text-[#071A34] shadow-[0_1px_2px_rgba(7,26,52,0.08)]'
+                  : 'text-[#8A98AB] hover:text-[#071A34]'
+              }`}
             >
               <List className="w-3.5 h-3.5" />
             </button>
@@ -499,48 +508,61 @@ function ProductCard({
 }) {
   const size = product.templates[0] ? formatTemplateSize(product.templates[0]) : '';
   return (
-    <article className={`bg-white border border-[#E4EAF1] rounded-lg overflow-hidden flex flex-col hover:border-[#D5DEE8] hover:shadow-[0_8px_22px_rgba(7,26,52,0.05)] ${product.status === 'arquivado' ? 'opacity-80' : ''}`}>
-      <div className="relative">
-        <button type="button" onClick={onOpen} className="block w-full text-left">
-          <ProductThumb product={product} className="h-[148px] w-full" />
-        </button>
-        <div className="absolute top-2 right-2">
-          <button
-            type="button"
-            data-product-menu-trigger
-            aria-expanded={menuOpen}
-            aria-label={`Ações de ${product.name}`}
-            onClick={onToggleMenu}
-            className="h-7 w-7 rounded-md bg-white/95 border border-[#E4EAF1] text-[#5A6B82] inline-flex items-center justify-center"
-          >
-            <MoreHorizontal className="w-4 h-4" />
+    <article className={`bg-white border border-[#E7EDF3] rounded-2xl flex flex-col ${product.status === 'arquivado' ? 'opacity-80' : ''}`}>
+      <div className="p-2.5 pb-1">
+        <div className="relative rounded-xl border border-[#E6ECF2] bg-[#F6F8FB] overflow-hidden">
+          <button type="button" onClick={onOpen} className="block w-full">
+            <ProductThumb product={product} className="h-[148px] w-full" />
           </button>
-          {menuOpen && (
-            <ActionMenu
-              menuRef={menuRef}
-              archived={product.status === 'arquivado'}
-              onView={onOpen}
-              onEdit={onEdit}
-              onDuplicate={onDuplicate}
-              onArchive={onArchive}
-              onDelete={onAskDelete}
-            />
-          )}
+          <div className="absolute top-2 right-2">
+            <button
+              type="button"
+              data-product-menu-trigger
+              aria-expanded={menuOpen}
+              aria-label={`Ações de ${product.name}`}
+              onClick={onToggleMenu}
+              className="h-7 w-7 rounded-full bg-white/90 text-[#5A6B82] hover:text-[#071A34] inline-flex items-center justify-center"
+            >
+              <MoreHorizontal className="w-4 h-4" />
+            </button>
+            {menuOpen && (
+              <ActionMenu
+                menuRef={menuRef}
+                archived={product.status === 'arquivado'}
+                onView={onOpen}
+                onEdit={onEdit}
+                onDuplicate={onDuplicate}
+                onArchive={onArchive}
+                onDelete={onAskDelete}
+              />
+            )}
+          </div>
         </div>
       </div>
-      <button type="button" onClick={onOpen} className="px-3.5 py-3 text-left flex flex-col gap-2 flex-1">
-        <div>
-          <div className="text-[13.5px] font-semibold text-[#071A34] leading-snug line-clamp-2">{product.name}</div>
-          <p className="text-[12px] text-[#5A6B82] mt-0.5">{product.category}</p>
+      <button type="button" onClick={onOpen} className="px-3.5 pt-2 pb-3.5 text-left flex flex-col flex-1">
+        <div className="text-[14px] font-semibold text-[#071A34] leading-snug line-clamp-2 min-h-[2.5rem]">
+          {product.name}
         </div>
-        <p className="text-[12px] text-[#334155]">
-          {size || 'Sem formato'}
-          <span className="text-[#8A98AB]"> · {product.templates.length} {product.templates.length === 1 ? 'template' : 'templates'}</span>
-        </p>
-        <div className="mt-auto flex items-end justify-between gap-2">
+        <div className="mt-2 space-y-1">
+          <p className="flex items-center gap-1.5 text-[12px] text-[#5A6B82]">
+            <Printer className="w-3.5 h-3.5 shrink-0" strokeWidth={1.75} />
+            <span className="truncate">{product.category}</span>
+          </p>
+          <p className="flex items-center gap-1.5 text-[12px] text-[#5A6B82]">
+            <Scaling className="w-3.5 h-3.5 shrink-0" strokeWidth={1.75} />
+            <span className="truncate">
+              {size || 'Sem formato'}
+              {' · '}
+              {product.templates.length} {product.templates.length === 1 ? 'template' : 'templates'}
+            </span>
+          </p>
+        </div>
+        <div className="mt-3 flex items-end justify-between gap-2">
           <div>
-            <div className="text-[11px] text-[#8A98AB]">Custo {product.cost === null ? '—' : formatMoney(product.cost)}</div>
-            <div className="text-[14px] font-semibold text-[#071A34] tabular-nums">
+            <div className="text-[11px] text-[#8A98AB]">
+              Custo {product.cost === null ? '—' : formatMoney(product.cost)}
+            </div>
+            <div className="text-[14px] font-semibold text-[#071A34] tabular-nums leading-tight">
               {product.price === null ? 'Sob consulta' : formatMoney(product.price)}
             </div>
           </div>
@@ -689,7 +711,9 @@ function ActionMenu({
     <button
       type="button"
       onClick={onClick}
-      className={`w-full px-2.5 py-1.5 text-left text-[12.5px] inline-flex items-center gap-2 hover:bg-[#F6F8FB] ${danger ? 'text-rose-700' : 'text-[#0F1E36]'}`}
+      className={`mx-1 my-0.5 w-[calc(100%-0.5rem)] px-2.5 py-1.5 rounded-lg text-left text-[12.5px] inline-flex items-center gap-2 ${
+        danger ? 'text-rose-700 hover:bg-rose-50' : 'text-[#334155] hover:bg-[#F4F7FB] hover:text-[#071A34]'
+      }`}
     >
       <Icon className="w-3.5 h-3.5" />
       {label}
@@ -700,7 +724,7 @@ function ActionMenu({
     <div
       ref={menuRef}
       style={{ top: pos.top, left: pos.left }}
-      className="fixed z-30 w-[188px] rounded-lg border border-[#E4EAF1] bg-white shadow-[0_10px_28px_rgba(7,26,52,0.08)] py-1"
+      className="fixed z-30 w-[188px] rounded-xl bg-white shadow-[0_12px_32px_rgba(7,26,52,0.12)] py-1"
     >
       <Item icon={Eye} label="Visualizar detalhes" onClick={onView} />
       <Item icon={Pencil} label="Editar" onClick={onEdit} />

@@ -1,4 +1,5 @@
 import { Plus, Trash2, X } from 'lucide-react';
+import { SelectMenu } from '../components/SelectMenu';
 import type { ReactNode } from 'react';
 import type { CatalogFieldErrors } from './catalogValidation';
 import { emptyTemplate } from './catalogValidation';
@@ -94,29 +95,25 @@ export function ProductEditor({
                 </Field>
                 <div className="grid grid-cols-2 gap-3">
                   <Field label="Categoria">
-                    <select
+                    <SelectMenu
                       value={draft.category}
-                      onChange={(event) =>
-                        onChange({ ...draft, category: event.target.value as CatalogProduct['category'] })
-                      }
-                      className={fieldClass}
-                    >
-                      {PRODUCT_CATEGORIES.map((category) => (
-                        <option key={category}>{category}</option>
-                      ))}
-                    </select>
+                      ariaLabel="Categoria do produto"
+                      className="w-full max-w-none"
+                      onChange={(category) => onChange({ ...draft, category })}
+                      options={PRODUCT_CATEGORIES.map((category) => ({ value: category, label: category }))}
+                    />
                   </Field>
                   <Field label="Status">
-                    <select
+                    <SelectMenu
                       value={draft.status}
-                      onChange={(event) =>
-                        onChange({ ...draft, status: event.target.value as CatalogProduct['status'] })
-                      }
-                      className={fieldClass}
-                    >
-                      <option value="ativo">Ativo</option>
-                      <option value="arquivado">Arquivado</option>
-                    </select>
+                      ariaLabel="Status do produto"
+                      className="w-full max-w-none"
+                      onChange={(status) => onChange({ ...draft, status })}
+                      options={[
+                        { value: 'ativo', label: 'Ativo' },
+                        { value: 'arquivado', label: 'Arquivado' },
+                      ]}
+                    />
                   </Field>
                 </div>
                 <Field label="Descrição">
@@ -367,16 +364,13 @@ function TemplateFields({
           />
         </Field>
         <Field label="Unidade">
-          <select
-            value={template.unit}
-            onChange={(event) => onChange({ unit: event.target.value as MeasureUnit | '' })}
-            className={fieldClass}
-          >
-            <option value="">—</option>
-            {MEASURE_UNITS.map((unit) => (
-              <option key={unit} value={unit}>{unit}</option>
-            ))}
-          </select>
+          <SelectMenu
+            value={template.unit || 'mm'}
+            ariaLabel="Unidade de medida"
+            className="w-full max-w-none"
+            onChange={(unit) => onChange({ unit: unit as MeasureUnit })}
+            options={MEASURE_UNITS.map((unit) => ({ value: unit, label: unit }))}
+          />
         </Field>
       </div>
       <div className="grid grid-cols-2 gap-3">
@@ -396,16 +390,18 @@ function TemplateFields({
           <input value={template.bleed} onChange={(event) => onChange({ bleed: event.target.value })} className={fieldClass} />
         </Field>
         <Field label="Orientação">
-          <select
-            value={template.orientation}
-            onChange={(event) => onChange({ orientation: event.target.value as TemplateOrientation | '' })}
-            className={fieldClass}
-          >
-            <option value="">Não definida</option>
-            {ORIENTATIONS.map((item) => (
-              <option key={item} value={item}>{item}</option>
-            ))}
-          </select>
+          <SelectMenu
+            value={template.orientation || 'nenhuma'}
+            ariaLabel="Orientação do template"
+            className="w-full max-w-none"
+            onChange={(orientation) =>
+              onChange({ orientation: orientation === 'nenhuma' ? '' : (orientation as TemplateOrientation) })
+            }
+            options={[
+              { value: 'nenhuma', label: 'Não definida' },
+              ...ORIENTATIONS.map((item) => ({ value: item, label: item })),
+            ]}
+          />
         </Field>
       </div>
       <Field label="Configuração do formato">
@@ -509,11 +505,13 @@ function ImageFields({
 
 function UnitSelect({ value, onChange }: { value: SaleUnit; onChange: (unit: SaleUnit) => void }) {
   return (
-    <select value={value} onChange={(event) => onChange(event.target.value as SaleUnit)} className={fieldClass}>
-      {SALE_UNITS.map((unit) => (
-        <option key={unit} value={unit}>{unit}</option>
-      ))}
-    </select>
+    <SelectMenu
+      value={value}
+      ariaLabel="Unidade"
+      className="w-full max-w-none"
+      onChange={onChange}
+      options={SALE_UNITS.map((unit) => ({ value: unit, label: unit }))}
+    />
   );
 }
 
@@ -565,10 +563,15 @@ function Detail({ label, value }: { label: string; value: string }) {
 }
 
 export function StatusPill({ status }: { status: CatalogProduct['status'] }) {
-  const styles = status === 'ativo' ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-800';
+  const active = status === 'ativo';
   return (
-    <span className={`inline-flex h-6 items-center px-2 rounded-full text-[11px] font-medium ${styles}`}>
-      {status === 'ativo' ? 'Ativo' : 'Arquivado'}
+    <span
+      className={`inline-flex h-6 items-center gap-1.5 px-2 rounded-full text-[11px] font-medium ${
+        active ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-800'
+      }`}
+    >
+      <span className={`h-1.5 w-1.5 rounded-full ${active ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+      {active ? 'Ativo' : 'Arquivado'}
     </span>
   );
 }

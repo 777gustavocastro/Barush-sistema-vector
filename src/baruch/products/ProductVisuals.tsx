@@ -13,7 +13,7 @@ export function ProductThumb({
       <img
         src={product.image.dataUrl}
         alt={product.name}
-        className={`object-cover bg-[#F4F7FB] ${className ?? ''}`}
+        className={`object-contain bg-[#F6F8FB] ${className ?? ''}`}
       />
     );
   }

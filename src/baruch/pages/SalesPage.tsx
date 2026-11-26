@@ -300,8 +300,8 @@ export function SalesPage({ onRegisterSale: _onRegisterSale, clients }: SalesPag
   const remaining = receiveNow ? Math.max(0, quote.total - paidSecond - (payment === 'Dinheiro' ? Math.min(quote.total - paidSecond, cashTendered) : quote.total - paidSecond)) : quote.total;
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-end justify-between gap-3">
+    <div className="h-full min-h-0 flex flex-col overflow-hidden gap-3">
+      <div className="shrink-0 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 className="text-[18px] font-semibold text-[#071A34] tracking-[-0.015em]">{screen === 'pos' ? 'Nova venda' : 'Vendas'}</h2>
           <p className="text-[12.5px] text-[#5A6B82] mt-0.5">Registre e consulte as vendas da gráfica.</p>
@@ -316,7 +316,7 @@ export function SalesPage({ onRegisterSale: _onRegisterSale, clients }: SalesPag
       {catalogError && <div className="rounded-lg px-3 py-2 text-[12.5px] bg-rose-50 text-rose-800">{catalogError}</div>}
 
       {screen === 'history' ? (
-        <section className="space-y-3">
+        <section className="flex-1 min-h-0 overflow-y-auto space-y-3">
           <div className="flex flex-wrap gap-2">
             <input value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} placeholder="Número, cliente ou produto" aria-label="Buscar venda" className="h-9 min-w-[200px] flex-1 rounded-lg border border-[#E4EAF1] px-3 text-[12.5px]" />
             <select value={historyStatus} onChange={(event) => setHistoryStatus(event.target.value as typeof historyStatus)} aria-label="Status da venda" className="h-9 rounded-lg border border-[#E4EAF1] px-2 text-[12.5px]">
@@ -352,20 +352,21 @@ export function SalesPage({ onRegisterSale: _onRegisterSale, clients }: SalesPag
           )}
         </section>
       ) : (
-        <div className="flex flex-col xl:flex-row gap-5 xl:h-[calc(100vh-8.75rem)] min-h-0">
-          <section className="min-w-0 flex-1 overflow-y-auto pr-1">
-            <label className="relative block mb-3">
+        <div className="flex-1 min-h-0 flex flex-col xl:flex-row gap-5 overflow-hidden">
+          <section className="min-w-0 min-h-0 flex-1 flex flex-col overflow-hidden">
+            <label className="relative block mb-3 shrink-0">
               <Search className="w-3.5 h-3.5 text-[#8A98AB] absolute left-3 top-1/2 -translate-y-1/2" />
               <input value={productQuery} onChange={(event) => setProductQuery(event.target.value)} placeholder="Buscar produto por nome ou categoria" aria-label="Buscar produto" className="h-9 w-full rounded-lg border border-[#E4EAF1] bg-white pl-8 pr-3 text-[12.5px] outline-none focus:border-[#C5D0DE]" />
             </label>
+            <div className="flex-1 min-h-0 overflow-y-auto pr-1">
             {foundProducts.length === 0 ? <p className="py-10 text-center text-[12.5px] text-[#8A98AB]">Nenhum produto encontrado.</p> : (
-              <div className="grid grid-cols-[repeat(auto-fill,minmax(112px,1fr))] gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-8 gap-2.5">
                 {foundProducts.map((product) => (
-                  <article key={product.id} className="min-w-0">
-                    <div className="rounded-xl border border-[#E6ECF2] bg-[#F6F8FB] overflow-hidden">
-                      <ProductThumb product={{ name: product.name, category: product.category, image: product.image ? { id: product.id, name: product.name, dataUrl: product.image } : null }} className="h-[92px] w-full" />
+                  <article key={product.id} className="min-w-0 rounded-xl border border-[#E6ECF2] bg-[#F7F9FC] p-1.5 flex flex-col">
+                    <div className="rounded-lg border border-[#E4EAF1] bg-white overflow-hidden">
+                      <ProductThumb product={{ name: product.name, category: product.category, image: product.image ? { id: product.id, name: product.name, dataUrl: product.image } : null }} className="h-[78px] w-full" />
                     </div>
-                    <div className="pt-1.5">
+                    <div className="pt-1.5 px-0.5 flex flex-col flex-1">
                       <div className="text-[12px] font-medium text-[#071A34] leading-snug line-clamp-2 min-h-[2rem]">{product.name}</div>
                       <div className="mt-1 flex items-end justify-between gap-1">
                         <div className="min-w-0">
@@ -379,11 +380,12 @@ export function SalesPage({ onRegisterSale: _onRegisterSale, clients }: SalesPag
                 ))}
               </div>
             )}
+            </div>
           </section>
 
-          <aside className="w-full xl:w-[332px] shrink-0 h-full min-h-[520px] flex flex-col">
-            <div className="relative">
-              <button type="button" onClick={() => { setClientOpen((value) => !value); setPayOpen(false); }} className="h-10 w-full rounded-xl bg-[#F3F6FA] px-3 text-left text-[13px] text-[#071A34] inline-flex items-center justify-between gap-2">
+          <aside className="w-full xl:w-[332px] shrink-0 h-full min-h-0 flex flex-col overflow-hidden">
+            <div className="relative shrink-0">
+              <button type="button" onClick={() => { setClientOpen((value) => !value); setPayOpen(false); }} className="h-10 w-full rounded-xl bg-[#F3F6FA] border border-[#E4EAF1] px-3 text-left text-[13px] text-[#071A34] inline-flex items-center justify-between gap-2">
                 <span className="truncate inline-flex items-center gap-2"><UserRound className="w-3.5 h-3.5 text-[#8A98AB]" />{selectedClient ? selectedClient.company : 'Sem cliente'}</span>
                 <ChevronDown className="w-3.5 h-3.5 text-[#8A98AB] shrink-0" />
               </button>
@@ -402,7 +404,7 @@ export function SalesPage({ onRegisterSale: _onRegisterSale, clients }: SalesPag
               )}
             </div>
 
-            <div className="mt-3 text-[12px] font-medium text-[#5A6B82]">Pedido</div>
+            <div className="mt-3 shrink-0 text-[12px] font-medium text-[#5A6B82]">Pedido</div>
             <div className="mt-2 flex-1 min-h-0 overflow-y-auto space-y-2 pr-0.5">
               {cart.length === 0 ? <p className="py-6 text-center text-[12.5px] text-[#8A98AB]">Nenhum item na venda.</p> : cart.map((item) => (
                 <div key={`${item.productId}-${item.catalogPrice}`} className="rounded-xl border border-[#E7EDF3] p-2">
@@ -422,7 +424,8 @@ export function SalesPage({ onRegisterSale: _onRegisterSale, clients }: SalesPag
               ))}
             </div>
 
-            <div className="mt-3 rounded-xl bg-[#F3F6FA] px-3 py-2.5 space-y-1.5 text-[12.5px]">
+            <div className="shrink-0">
+            <div className="mt-3 rounded-xl bg-[#E7EDF3] px-3 py-2.5 space-y-1.5 text-[12.5px]">
               <div className="flex justify-between text-[#5A6B82]"><span>Subtotal</span><span className="tabular-nums text-[#071A34]">{formatBRL(quote.subtotal)}</span></div>
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[#5A6B82]">Desconto</span>
@@ -443,7 +446,7 @@ export function SalesPage({ onRegisterSale: _onRegisterSale, clients }: SalesPag
             </div>
 
             <div className="relative mt-3">
-              <button type="button" onClick={() => { setPayOpen((value) => !value); setClientOpen(false); }} className="h-10 w-full rounded-xl bg-[#F3F6FA] px-3 text-left text-[13px] text-[#071A34] inline-flex items-center justify-between">
+              <button type="button" onClick={() => { setPayOpen((value) => !value); setClientOpen(false); }} className="h-10 w-full rounded-xl bg-[#F3F6FA] border border-[#E4EAF1] px-3 text-left text-[13px] text-[#071A34] inline-flex items-center justify-between">
                 <span className="inline-flex items-center gap-2"><PayIcon method={payment} />{payment}</span>
                 <ChevronDown className="w-3.5 h-3.5 text-[#8A98AB]" />
               </button>
@@ -471,10 +474,11 @@ export function SalesPage({ onRegisterSale: _onRegisterSale, clients }: SalesPag
               {change > 0 && <div className="flex justify-between"><span>Troco</span><span className="tabular-nums">{formatBRL(change)}</span></div>}
             </div>
             <textarea value={notes} onChange={(event) => setNotes(event.target.value)} rows={2} placeholder="Observações" aria-label="Observações da venda" className="mt-2 w-full rounded-xl bg-[#F6F8FB] px-3 py-2 text-[12.5px] outline-none resize-none" />
-            <div className="mt-3 grid grid-cols-[auto_auto_1fr] gap-1.5">
+            <div className="mt-3 shrink-0 grid grid-cols-[auto_auto_1fr] gap-1.5">
               <button type="button" onClick={() => cart.length > 0 && setConfirmClear(true)} className="h-9 px-2.5 rounded-lg text-[12px] text-[#5A6B82] hover:bg-[#F3F6FA]">Limpar</button>
               <button type="button" disabled={saving} onClick={() => void saveQuote()} className="h-9 px-2.5 rounded-lg bg-[#F3F6FA] text-[12px] text-[#071A34] disabled:opacity-40">Gerar orçamento</button>
               <button type="button" disabled={saving} onClick={() => void finalize()} className="h-9 rounded-lg bg-[#071A34] text-white text-[12.5px] font-medium hover:bg-[#0D284D] disabled:opacity-40 inline-flex items-center justify-center gap-1.5"><ShoppingBag className="w-3.5 h-3.5 text-[#E3C16F]" />{saving ? 'Salvando…' : 'Finalizar venda'}</button>
+            </div>
             </div>
           </aside>
         </div>

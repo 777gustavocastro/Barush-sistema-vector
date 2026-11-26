@@ -205,7 +205,7 @@ export function BaruchApp() {
       />
 
       <div
-        className={`min-h-screen flex flex-col transition-[padding-left] duration-200 ease-out ${
+        className={`${activePage === 'sales' ? 'h-screen overflow-hidden' : 'min-h-screen'} flex flex-col transition-[padding-left] duration-200 ease-out ${
           sidebarCollapsed ? 'pl-[70px]' : 'pl-[252px]'
         }`}
       >
@@ -223,7 +223,7 @@ export function BaruchApp() {
           userInitials={CURRENT_USER.initials}
         />
 
-        <main className="flex-1 w-full px-6 py-6">
+        <main className={`flex-1 w-full min-h-0 px-6 ${activePage === 'sales' ? 'py-4 overflow-hidden flex flex-col' : 'py-6'}`}>
           {activePage === 'dashboard' && (
             <DashboardPage onOpenProduction={handleOpenProduction} />
           )}

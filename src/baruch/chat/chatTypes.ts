@@ -1,21 +1,42 @@
 import type { VectorizationPipelineResult, VectorizerProfileId } from '../../types/vectorizer';
 
-export type ChatToolId =
-  | 'remove_bg'
+export type BottomToolId = 'vectorize' | 'upscale' | 'mockup' | 'remove_bg';
+
+export type HoverActionId =
   | 'vectorize'
-  | 'enhance'
   | 'upscale'
-  | 'adjust'
+  | 'remove_bg'
   | 'mockup'
-  | 'print_prep'
-  | 'generate_pdf'
-  | 'export_svg';
+  | 'resize'
+  | 'enhance';
 
-export type ResolutionPreset = 'standard' | 'HD' | '4K';
+export type OutputFormatOption = 'PNG' | 'PDF' | 'SVG';
 
-export type AspectRatioOption = 'product' | '1:1' | '4:3' | '16:9' | '9:16' | '3:2' | 'A4';
+export type QualityOption = '4K' | '2K';
 
-export type OutputFormatOption = 'SVG' | 'PDF' | 'PNG' | 'JPG' | 'WebP';
+export type AspectRatioOption =
+  | '1:1'
+  | '3:4'
+  | '4:3'
+  | '9:16'
+  | '16:9'
+  | '3:2'
+  | '2:3'
+  | '4:5'
+  | '21:9'
+  | 'A4';
+
+export type VectorizeModeOption = 'auto' | 'high_fidelity' | 'logo' | 'illustration';
+
+export type UpscaleFactorOption = '2x' | '4x';
+
+export type MockupCategoryOption =
+  | 'copos'
+  | 'camisetas'
+  | 'uniformes'
+  | 'banners'
+  | 'cartao_visitas'
+  | 'impressoes';
 
 export interface ChatAttachment {
   id: string;
@@ -36,12 +57,12 @@ export interface ChatMediaItem {
   beforeUrl?: string;
   svgMarkup?: string;
   vectorResult?: VectorizationPipelineResult;
+  aspectRatio?: AspectRatioOption | string;
+  qualityLabel?: string;
+  outputFormat?: OutputFormatOption;
   width?: number;
   height?: number;
-  resolutionLabel?: string;
-  approved?: boolean;
   operationTag?: string;
-  productName?: string;
 }
 
 export interface ChatMessage {
@@ -51,12 +72,6 @@ export interface ChatMessage {
   time: string;
   attachments?: ChatAttachment[];
   media?: ChatMediaItem;
-  fileDownload?: {
-    fileName: string;
-    format: string;
-    sizeLabel: string;
-    blobUrl: string;
-  };
   progress?: {
     stage: string;
     percent: number;
@@ -66,10 +81,12 @@ export interface ChatMessage {
 export interface ChatConversation {
   id: string;
   clientId: string;
-  title: string;
-  productId: string | null;
   updatedAt: string;
   messages: ChatMessage[];
 }
 
-export type ChatModelProfile = VectorizerProfileId;
+export function mapVectorizeModeToProfile(mode: VectorizeModeOption): VectorizerProfileId {
+  if (mode === 'high_fidelity') return 'high_fidelity';
+  if (mode === 'logo' || mode === 'illustration') return 'logo_illustration';
+  return 'auto';
+}

@@ -32,8 +32,8 @@ export const MAIN_NAV_ITEMS: NavItemConfig[] = [
   },
   {
     id: 'chat_projects',
-    label: 'Chat / Projetos',
-    shortDescription: 'IA, criação de artes e projetos por cliente',
+    label: 'Chat',
+    shortDescription: 'IA, criação e processamento de imagens',
     icon: MessageSquareText,
   },
   {

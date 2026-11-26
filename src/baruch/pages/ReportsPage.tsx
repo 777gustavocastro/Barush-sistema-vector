@@ -24,7 +24,7 @@ export function ReportsPage() {
   useEffect(() => {
     loadSales()
       .then((items) => {
-        const open = items.filter((sale) => sale.status !== 'cancelada');
+        const open = items.filter((sale) => sale.status === 'finalizada');
         setPosTotals({
           billed: open.reduce((sum, sale) => sum + sale.total, 0),
           received: open.reduce((sum, sale) => sum + sale.received, 0),

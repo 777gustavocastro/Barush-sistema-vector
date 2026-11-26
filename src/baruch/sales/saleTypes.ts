@@ -35,7 +35,7 @@ export interface StoredSale {
   received: number;
   pending: number;
   paymentStatus: 'pago' | 'parcial' | 'pendente';
-  status: 'finalizada' | 'cancelada';
+  status: 'finalizada' | 'cancelada' | 'orcamento';
   cancelReason?: string;
   cancelledAt?: string;
   productionOrders: ProductionOrder[];

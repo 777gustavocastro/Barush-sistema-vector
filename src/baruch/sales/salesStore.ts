@@ -122,7 +122,7 @@ export function toSaleRecord(sale: StoredSale): SaleRecord {
 
 export function productionOrdersFromSales(sales: StoredSale[]): ProductionOrder[] {
   return sales
-    .filter((sale) => sale.status !== 'cancelada')
+    .filter((sale) => sale.status === 'finalizada')
     .flatMap((sale) => sale.productionOrders);
 }
 

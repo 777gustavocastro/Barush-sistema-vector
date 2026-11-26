@@ -77,7 +77,7 @@ export function BaruchApp() {
       loadSales()
         .then((items) => {
           if (!alive) return;
-          setSales(items.map(toSaleRecord));
+          setSales(items.filter((sale) => sale.status !== 'orcamento').map(toSaleRecord));
           const generated = productionOrdersFromSales(items);
           setOrders((current) => {
             const ids = new Set(current.map((order) => order.id));

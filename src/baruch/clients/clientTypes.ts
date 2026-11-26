@@ -36,6 +36,7 @@ export interface ClientActivity {
     id: string;
     name: string;
     format: string;
+    previewUrl?: string;
   }>;
 }
 

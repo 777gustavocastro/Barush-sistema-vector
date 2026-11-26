@@ -1,6 +1,9 @@
 import {
   ChevronLeft,
   ChevronRight,
+  Download,
+  FileImage,
+  FileText,
   FolderOpen,
   LayoutGrid,
   List,
@@ -8,6 +11,7 @@ import {
   MessageSquareText,
   MoreHorizontal,
   Pencil,
+  PenTool,
   Phone,
   Plus,
   Search,
@@ -582,15 +586,54 @@ function ClientProfile(props: {
             </div>
           )}
           {props.tab === 'arquivos' && (
-            <SimpleList empty="Nenhuma arte ou arquivo vinculado." items={[
-              ...files.map((item) => ({ id: item.id, title: item.name, detail: `${item.project} · ${item.format} · ${item.size}` })),
-              ...chatArts.map((item) => ({ id: item.id, title: item.name, detail: `Arte da conversa · ${item.format}` })),
-            ]} />
+            <FileGrid
+              files={[
+                ...files.map((item) => ({
+                  id: item.id,
+                  name: item.name,
+                  format: item.format,
+                  detail: `${item.project} · ${item.size}`,
+                })),
+                ...chatArts.map((item) => ({
+                  id: item.id,
+                  name: item.name,
+                  format: item.format,
+                  detail: 'Arte da conversa',
+                  previewUrl: item.previewUrl,
+                })),
+              ]}
+              onOpenChat={props.onChat}
+            />
           )}
           {props.tab === 'compras' && (
-            <div className="space-y-3">
-              <p className="text-[#5A6B82]">Total registrado {formatBRL(info?.total ?? 0)}</p>
-              <SimpleList empty="Nenhuma compra vinculada." items={props.sales.map((sale) => ({ id: sale.id, title: `${sale.code} · ${formatBRL(sale.total)}`, detail: `${sale.itemsSummary} · ${sale.date} · ${sale.paymentMethod} · ${sale.status === 'confirmada' ? 'Confirmada' : 'Pendente'}` }))} />
+            <div className="space-y-4">
+              <p className="text-[12.5px] text-[#5A6B82]">
+                Total registrado <span className="font-semibold text-[#071A34] tabular-nums">{formatBRL(info?.total ?? 0)}</span>
+              </p>
+              {props.sales.length === 0 ? (
+                <p className="text-[#8A98AB]">Nenhuma compra vinculada.</p>
+              ) : (
+                <div className="space-y-3">
+                  {props.sales.map((sale) => (
+                    <article key={sale.id} className="rounded-xl border border-[#E7EDF3] px-3.5 py-3">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <div className="text-[13.5px] font-semibold text-[#071A34]">{sale.code}</div>
+                          <div className="mt-0.5 text-[12px] text-[#5A6B82]">{sale.date}</div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <div className="text-[14px] font-semibold text-[#071A34] tabular-nums">{formatBRL(sale.total)}</div>
+                          <div className={`mt-1 inline-flex h-5 items-center px-2 rounded-full text-[11px] font-medium ${sale.status === 'confirmada' ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-800'}`}>
+                            {sale.status === 'confirmada' ? 'Confirmada' : 'Pendente'}
+                          </div>
+                        </div>
+                      </div>
+                      <p className="mt-3 text-[13px] text-[#334155] leading-relaxed">{sale.itemsSummary}</p>
+                      <p className="mt-2 text-[12px] text-[#8A98AB]">Pagamento · {sale.paymentMethod}</p>
+                    </article>
+                  ))}
+                </div>
+              )}
             </div>
           )}
           {props.tab === 'observacoes' && (
@@ -700,6 +743,125 @@ function Label({ text, error, children }: { text: string; error?: string; childr
 
 function Info({ label, value }: { label: string; value: string }) {
   return <div><dt className="text-[11px] text-[#8A98AB]">{label}</dt><dd className="text-[#0F1E36] mt-0.5">{value}</dd></div>;
+}
+
+function FileGrid({
+  files,
+  onOpenChat,
+}: {
+  files: Array<{ id: string; name: string; format: string; detail: string; previewUrl?: string }>;
+  onOpenChat: () => void;
+}) {
+  if (files.length === 0) return <p className="text-[#8A98AB]">Nenhuma arte ou arquivo vinculado.</p>;
+  return (
+    <div className="grid grid-cols-2 gap-3">
+      {files.map((file) => (
+          <article key={file.id} className="group rounded-xl border border-[#E7EDF3] overflow-hidden bg-white">
+            <div className="relative h-[104px] bg-[#F6F8FB]">
+              <FilePreview format={file.format} previewUrl={file.previewUrl} name={file.name} />
+              <div className="absolute inset-0 flex items-center justify-center gap-1.5 bg-[#071A34]/28 opacity-0 group-hover:opacity-100 transition-opacity">
+                <button
+                  type="button"
+                  onClick={() => void downloadClientFile(file)}
+                  className="h-7 px-2 rounded-full bg-white text-[11.5px] text-[#071A34] inline-flex items-center gap-1"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Baixar
+                </button>
+                <button
+                  type="button"
+                  onClick={onOpenChat}
+                  className="h-7 px-2 rounded-full bg-white text-[11.5px] text-[#071A34] inline-flex items-center gap-1"
+                >
+                  <MessageSquareText className="w-3.5 h-3.5" />
+                  Ver na conversa
+                </button>
+              </div>
+            </div>
+            <div className="px-2.5 py-2">
+              <div className="text-[12px] font-medium text-[#071A34] truncate">{file.name}</div>
+              <div className="text-[11px] text-[#8A98AB] truncate">{file.format} · {file.detail}</div>
+            </div>
+          </article>
+      ))}
+    </div>
+  );
+}
+
+function FilePreview({ format, previewUrl, name }: { format: string; previewUrl?: string; name: string }) {
+  const kind = format.toUpperCase();
+  if (previewUrl && ['PNG', 'JPG', 'JPEG', 'WEBP', 'SVG'].includes(kind)) {
+    return <img src={previewUrl} alt={name} className="h-full w-full object-contain" />;
+  }
+  if (kind === 'SVG') {
+    return (
+      <svg viewBox="0 0 160 100" className="h-full w-full" aria-hidden>
+        <rect width="160" height="100" fill="#F6F8FB" />
+        <path d="M28 68 L58 32 L78 54 L102 24 L132 68 Z" fill="none" stroke="#1E3A5F" strokeWidth="3" />
+        <circle cx="112" cy="34" r="6" fill="#C89B3C" />
+      </svg>
+    );
+  }
+  if (kind === 'PDF') {
+    return (
+      <div className="h-full flex items-center justify-center">
+        <div className="w-14 h-[72px] rounded-sm bg-white border border-[#E4EAF1] px-2 py-2 shadow-[0_1px_2px_rgba(7,26,52,0.04)]">
+          <div className="h-1.5 w-8 rounded bg-[#071A34]/80 mb-1.5" />
+          <div className="h-1 w-10 rounded bg-[#E4EAF1] mb-1" />
+          <div className="h-1 w-9 rounded bg-[#E4EAF1] mb-1" />
+          <div className="h-1 w-7 rounded bg-[#E4EAF1]" />
+          <FileText className="w-3.5 h-3.5 text-[#8A98AB] mt-2" />
+        </div>
+      </div>
+    );
+  }
+  if (kind === 'PNG' || kind === 'JPG' || kind === 'JPEG' || kind === 'WEBP') {
+    return (
+      <div className="h-full flex flex-col items-center justify-center text-[#8A98AB]">
+        <FileImage className="w-6 h-6" />
+        <span className="mt-1 text-[11px]">{kind}</span>
+      </div>
+    );
+  }
+  return (
+    <div className="h-full flex flex-col items-center justify-center text-[#8A98AB]">
+      <PenTool className="w-6 h-6" />
+      <span className="mt-1 text-[11px]">{kind || 'Arquivo'}</span>
+    </div>
+  );
+}
+
+async function downloadClientFile(file: { name: string; format: string; previewUrl?: string }) {
+  const filename = file.name.includes('.') ? file.name : `${file.name}.${file.format.toLowerCase()}`;
+  if (file.previewUrl) {
+    if (file.previewUrl.startsWith('data:')) {
+      triggerDownload(file.previewUrl, filename);
+      return;
+    }
+    const response = await fetch(file.previewUrl);
+    const blob = await response.blob();
+    triggerDownload(URL.createObjectURL(blob), filename);
+    return;
+  }
+  const kind = file.format.toUpperCase();
+  if (kind === 'SVG') {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect width="320" height="180" fill="#F6F8FB"/><text x="24" y="96" font-family="sans-serif" font-size="16" fill="#071A34">${file.name}</text></svg>`;
+    triggerDownload(URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' })), filename);
+    return;
+  }
+  if (kind === 'PDF') {
+    const text = `%PDF-1.1\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Count 1/Kids[3 0 R]>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 200]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF`;
+    triggerDownload(URL.createObjectURL(new Blob([text], { type: 'application/pdf' })), filename);
+    return;
+  }
+  triggerDownload(URL.createObjectURL(new Blob([file.name], { type: 'text/plain' })), filename);
+}
+
+function triggerDownload(href: string, name: string) {
+  const link = document.createElement('a');
+  link.href = href;
+  link.download = name;
+  link.click();
 }
 
 function SimpleList({ items, empty }: { items: Array<{ id: string; title: string; detail: string }>; empty: string }) {

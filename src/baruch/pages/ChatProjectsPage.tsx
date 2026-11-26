@@ -218,17 +218,19 @@ export function ChatProjectsPage({
         conversationId: conversation.id,
         updatedAt: new Date().toISOString(),
         preview: last?.text ?? '',
-        arts: conversation.messages.flatMap((message) =>
-          message.media
-            ? [
-                {
-                  id: message.media.id,
-                  name: message.media.fileName,
-                  format: message.media.fileName.split('.').pop()?.toUpperCase() || 'IMG',
-                },
-              ]
-            : []
-        ),
+        arts: conversation.messages.flatMap((message) => {
+          if (!message.media) return [];
+          const preview = message.media.imageUrl;
+          const previewUrl = preview && (preview.startsWith('/') || preview.startsWith('http') || preview.length < 180000) ? preview : undefined;
+          return [
+            {
+              id: message.media.id,
+              name: message.media.fileName,
+              format: message.media.fileName.split('.').pop()?.toUpperCase() || 'IMG',
+              previewUrl,
+            },
+          ];
+        }),
       }).catch(() => undefined);
     });
   }, [conversations]);

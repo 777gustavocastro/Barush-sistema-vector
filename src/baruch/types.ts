@@ -1,3 +1,6 @@
+/** Filtro de produção aberto a partir dos indicadores do Dashboard. */
+export type ProductionFocus = 'aprovacao' | 'em_producao' | 'pronto' | 'atrasados';
+
 export type NavPageId =
   | 'dashboard'
   | 'chat_projects'

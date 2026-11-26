@@ -23,6 +23,7 @@ import type {
   ExpenseRecord,
   NavPageId,
   NotificationItem,
+  ProductionFocus,
   ProductionOrder,
   ProductionStatus,
   SaleRecord,
@@ -46,13 +47,26 @@ export function BaruchApp() {
   const [expenses, setExpenses] = useState<ExpenseRecord[]>(INITIAL_EXPENSES);
   const [notifications, setNotifications] =
     useState<NotificationItem[]>(INITIAL_NOTIFICATIONS);
+  const [productionFocus, setProductionFocus] = useState<ProductionFocus | null>(null);
 
   const pageMeta = getNavMeta(activePage);
-  const monthlyExpenses = expenses.reduce((acc, e) => acc + e.amount, 0);
 
   const handleSelectPage = (page: NavPageId) => {
+    if (page === 'production') setProductionFocus(null);
     setActivePage(page);
     setBreadcrumb(null);
+  };
+
+  const handleOpenProduction = (focus: ProductionFocus) => {
+    const labels: Record<ProductionFocus, string> = {
+      aprovacao: 'Aguardando aprovação',
+      em_producao: 'Em produção',
+      pronto: 'Pronto para entrega',
+      atrasados: 'Atrasados',
+    };
+    setProductionFocus(focus);
+    setActivePage('production');
+    setBreadcrumb(labels[focus]);
   };
 
   const handleUpdateOrderStatus = (orderId: string, status: ProductionStatus) => {
@@ -144,12 +158,7 @@ export function BaruchApp() {
 
         <main className="flex-1 w-full px-6 py-6">
           {activePage === 'dashboard' && (
-            <DashboardPage
-              orders={orders}
-              sales={sales}
-              monthlyExpenses={monthlyExpenses}
-              onNavigate={handleSelectPage}
-            />
+            <DashboardPage onOpenProduction={handleOpenProduction} />
           )}
           {activePage === 'chat_projects' && (
             <ChatProjectsPage
@@ -173,6 +182,7 @@ export function BaruchApp() {
             <ProductionPage
               orders={orders}
               onUpdateStatus={handleUpdateOrderStatus}
+              focus={productionFocus}
             />
           )}
           {activePage === 'expenses' && (

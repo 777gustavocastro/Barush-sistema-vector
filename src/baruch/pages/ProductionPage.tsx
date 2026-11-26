@@ -1,11 +1,23 @@
 import { Calendar, CheckCircle2, Clock } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { formatBRL } from '../data/mockData';
-import type { ProductionOrder, ProductionStatus } from '../types';
+import type { ProductionFocus, ProductionOrder, ProductionStatus } from '../types';
 
 interface ProductionPageProps {
   orders: ProductionOrder[];
   onUpdateStatus: (orderId: string, status: ProductionStatus) => void;
+  focus?: ProductionFocus | null;
+}
+
+type StageFilter = 'todos' | ProductionStatus | 'em_andamento' | 'atrasados';
+
+const TODAY = '2026-11-25';
+
+function focusToFilter(focus: ProductionFocus): StageFilter {
+  if (focus === 'aprovacao') return 'arte_aprovacao';
+  if (focus === 'em_producao') return 'em_andamento';
+  if (focus === 'pronto') return 'pronto';
+  return 'atrasados';
 }
 
 const STAGES: Array<{ id: ProductionStatus; label: string }> = [
@@ -16,12 +28,23 @@ const STAGES: Array<{ id: ProductionStatus; label: string }> = [
   { id: 'pronto', label: 'Pronto' },
 ];
 
-export function ProductionPage({ orders, onUpdateStatus }: ProductionPageProps) {
-  const [stageFilter, setStageFilter] = useState<'todos' | ProductionStatus>('todos');
+export function ProductionPage({ orders, onUpdateStatus, focus = null }: ProductionPageProps) {
+  const [stageFilter, setStageFilter] = useState<StageFilter>('todos');
 
-  const filtered = orders.filter(
-    (o) => stageFilter === 'todos' || o.status === stageFilter
-  );
+  useEffect(() => {
+    setStageFilter(focus ? focusToFilter(focus) : 'todos');
+  }, [focus]);
+
+  const matches = (order: ProductionOrder, filter: StageFilter) => {
+    if (filter === 'todos') return true;
+    if (filter === 'em_andamento') {
+      return order.status === 'pre_impressao' || order.status === 'producao' || order.status === 'acabamento';
+    }
+    if (filter === 'atrasados') return order.status !== 'pronto' && order.dueDate < TODAY;
+    return order.status === filter;
+  };
+
+  const filtered = orders.filter((order) => matches(order, stageFilter));
 
   // Agrupamento simples por data de entrega para agenda
   const groupedByDate = filtered.reduce<Record<string, ProductionOrder[]>>((acc, order) => {
@@ -56,6 +79,28 @@ export function ProductionPage({ orders, onUpdateStatus }: ProductionPageProps) 
             }`}
           >
             Todos ({orders.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setStageFilter('em_andamento')}
+            className={`h-8 px-3 rounded-md text-[12px] font-medium transition-colors ${
+              stageFilter === 'em_andamento'
+                ? 'bg-[#071A34] text-white'
+                : 'bg-white border border-[#E4EAF1] text-[#5A6B82] hover:text-[#071A34]'
+            }`}
+          >
+            Em andamento ({orders.filter((order) => matches(order, 'em_andamento')).length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setStageFilter('atrasados')}
+            className={`h-8 px-3 rounded-md text-[12px] font-medium transition-colors ${
+              stageFilter === 'atrasados'
+                ? 'bg-[#071A34] text-white'
+                : 'bg-white border border-[#E4EAF1] text-[#5A6B82] hover:text-[#071A34]'
+            }`}
+          >
+            Atrasados ({orders.filter((order) => matches(order, 'atrasados')).length})
           </button>
           {STAGES.map((stage) => {
             const count = orders.filter((o) => o.status === stage.id).length;

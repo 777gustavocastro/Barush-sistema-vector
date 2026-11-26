@@ -3,12 +3,13 @@ import { useEffect, useRef, useState } from 'react';
 import { blankClient, saveClient } from '../clients/clientStore';
 import { CLIENTS, PRODUCTS, formatBRL } from '../data/mockData';
 import { loadCatalog } from '../products/catalogStore';
+import { activitiesForProduction, buildProductionOrders } from '../production/fromSale';
 import type { CatalogProduct } from '../products/catalogTypes';
 import { ProductThumb } from '../products/ProductVisuals';
 import { lineGross, lineNet, money, quoteSale } from '../sales/saleMath';
 import type { SaleLineSnapshot, StoredSale } from '../sales/saleTypes';
 import { loadSales, saveStoredSale, subscribeSales, updateStoredSale } from '../sales/salesStore';
-import type { ClientRecord, ProductionOrder, SaleRecord } from '../types';
+import type { ClientRecord, SaleRecord } from '../types';
 
 interface SalesPageProps {
   sales: SaleRecord[];
@@ -146,21 +147,27 @@ export function SalesPage({ onRegisterSale: _onRegisterSale, clients }: SalesPag
       const now = new Date();
       const id = `sal-${now.getTime()}`;
       const code = nextCode(records);
-      const due = new Date(now);
-      due.setDate(due.getDate() + 2);
-      const productionOrders: ProductionOrder[] = cart.map((line, index) => ({
-        id: `ord-${id}-${index}`,
-        code,
+      const [activities, productionCatalog] = await Promise.all([
+        activitiesForProduction(),
+        catalog.length > 0 ? Promise.resolve(catalog) : loadCatalog().then((items) => items.filter((item) => item.status === 'ativo')),
+      ]);
+      const productionOrders = buildProductionOrders({
+        saleId: id,
+        saleCode: code,
         clientId: selectedClient?.id ?? 'avulso',
         clientName: selectedClient?.company ?? 'Sem cliente',
-        productName: line.name,
-        quantity: line.quantity,
-        dueDate: due.toISOString().slice(0, 10),
-        dueLabel: 'Em 2 dias',
-        status: 'arte_aprovacao',
-        priority: 'normal',
-        value: lineNet(line),
-      }));
+        lines: cart.map((line) => ({
+          productId: line.productId,
+          name: line.name,
+          category: line.category,
+          quantity: line.quantity,
+          value: lineNet(line),
+        })),
+        catalog: productionCatalog,
+        notes: notes.trim(),
+        activities,
+        now,
+      });
       const sale: StoredSale = {
         id,
         code,

@@ -9,6 +9,7 @@ import {
 } from './data/mockData';
 import { getNavMeta } from './navigation';
 import { loadClients, subscribeClients } from './clients/clientStore';
+import { ensureProductionOrders, saveProductionOrder } from './production/productionStore';
 import { loadSales, productionOrdersFromSales, subscribeSales, toSaleRecord } from './sales/salesStore';
 import type { ClientProfile } from './clients/clientTypes';
 import { ChatProjectsPage } from './pages/ChatProjectsPage';
@@ -28,7 +29,6 @@ import type {
   NotificationItem,
   ProductionFocus,
   ProductionOrder,
-  ProductionStatus,
   SaleRecord,
 } from './types';
 
@@ -78,15 +78,14 @@ export function BaruchApp() {
         .then((items) => {
           if (!alive) return;
           setSales(items.filter((sale) => sale.status !== 'orcamento').map(toSaleRecord));
-          const generated = productionOrdersFromSales(items);
-          setOrders((current) => {
-            const ids = new Set(current.map((order) => order.id));
-            const fresh = generated.filter((order) => !ids.has(order.id));
-            const cancelled = new Set(
-              items.filter((sale) => sale.status === 'cancelada').flatMap((sale) => sale.productionOrders.map((order) => order.id))
-            );
-            return [...current.filter((order) => !cancelled.has(order.id)), ...fresh];
-          });
+          const cancelled = new Set(
+            items.filter((sale) => sale.status === 'cancelada').flatMap((sale) => sale.productionOrders.map((order) => order.id))
+          );
+          ensureProductionOrders(productionOrdersFromSales(items))
+            .then((stored) => {
+              if (alive) setOrders(stored.filter((order) => !cancelled.has(order.id)));
+            })
+            .catch(() => undefined);
         })
         .catch(() => undefined);
     };
@@ -136,10 +135,20 @@ export function BaruchApp() {
     setBreadcrumb(labels[focus]);
   };
 
-  const handleUpdateOrderStatus = (orderId: string, status: ProductionStatus) => {
-    setOrders((prev) =>
-      prev.map((order) => (order.id === orderId ? { ...order, status } : order))
-    );
+  const handleUpdateOrderStatus = async (order: ProductionOrder) => {
+    let snapshot: ProductionOrder[] = [];
+    setOrders((prev) => {
+      snapshot = prev;
+      return prev.some((item) => item.id === order.id)
+        ? prev.map((item) => (item.id === order.id ? order : item))
+        : [order, ...prev];
+    });
+    try {
+      await saveProductionOrder(order);
+    } catch (error) {
+      setOrders(snapshot);
+      throw error instanceof Error ? error : new Error('Não foi possível salvar a produção.');
+    }
   };
 
   const handleRegisterSale = (sale: SaleRecord) => {

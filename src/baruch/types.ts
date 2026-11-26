@@ -67,7 +67,26 @@ export type ProductionStatus =
   | 'pre_impressao'
   | 'producao'
   | 'acabamento'
-  | 'pronto';
+  | 'pronto'
+  | 'entregue';
+
+export type ProductionPriority = 'normal' | 'alta' | 'urgente';
+
+export interface ProductionHistoryEntry {
+  id: string;
+  at: string;
+  label: string;
+  by: string;
+}
+
+/** Referência ao arquivo já existente. Não copia o conteúdo. */
+export interface ProductionFileRef {
+  id: string;
+  name: string;
+  format: string;
+  kind: 'arte' | 'arquivo';
+  url?: string;
+}
 
 export interface ProductionOrder {
   id: string;
@@ -79,8 +98,25 @@ export interface ProductionOrder {
   dueDate: string;
   dueLabel: string;
   status: ProductionStatus;
-  priority: 'normal' | 'alta';
+  priority: ProductionPriority;
   value: number;
+  saleId?: string;
+  saleCode?: string;
+  productId?: string;
+  category?: string;
+  enteredAt?: string;
+  deliveredAt?: string;
+  deliveryNote?: string;
+  clientNote?: string;
+  internalNote?: string;
+  generalNote?: string;
+  technical?: Array<{ label: string; value: string }>;
+  artId?: string;
+  artName?: string;
+  artUrl?: string;
+  files?: ProductionFileRef[];
+  approval?: 'pendente' | 'aprovada' | 'nao_exige';
+  history?: ProductionHistoryEntry[];
 }
 
 export interface ProjectThread {

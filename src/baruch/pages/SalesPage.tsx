@@ -1,11 +1,12 @@
 import { CheckCircle2, Minus, Plus, Printer, Trash2 } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { CLIENTS, PRODUCTS, formatBRL } from '../data/mockData';
-import type { SaleRecord } from '../types';
+import type { ClientRecord, SaleRecord } from '../types';
 
 interface SalesPageProps {
   sales: SaleRecord[];
   onRegisterSale: (sale: SaleRecord) => void;
+  clients?: ClientRecord[];
 }
 
 interface CartItem {
@@ -22,8 +23,9 @@ const PAYMENT_METHODS: SaleRecord['paymentMethod'][] = [
   'Transferência',
 ];
 
-export function SalesPage({ sales, onRegisterSale }: SalesPageProps) {
-  const [clientId, setClientId] = useState(CLIENTS[0].id);
+export function SalesPage({ sales, onRegisterSale, clients }: SalesPageProps) {
+  const directory = clients && clients.length > 0 ? clients : CLIENTS;
+  const [clientId, setClientId] = useState(directory[0].id);
   const [paymentMethod, setPaymentMethod] = useState<SaleRecord['paymentMethod']>('PIX');
   const [cart, setCart] = useState<CartItem[]>([
     {
@@ -35,7 +37,13 @@ export function SalesPage({ sales, onRegisterSale }: SalesPageProps) {
   ]);
   const [lastReceipt, setLastReceipt] = useState<SaleRecord | null>(null);
 
-  const selectedClient = CLIENTS.find((c) => c.id === clientId) ?? CLIENTS[0];
+  useEffect(() => {
+    if (!directory.some((client) => client.id === clientId) && directory[0]) {
+      setClientId(directory[0].id);
+    }
+  }, [directory, clientId]);
+
+  const selectedClient = directory.find((c) => c.id === clientId) ?? directory[0];
   const total = cart.reduce((acc, item) => acc + item.unitPrice * item.quantity, 0);
 
   const addProduct = (productId: string) => {
@@ -158,7 +166,7 @@ export function SalesPage({ sales, onRegisterSale }: SalesPageProps) {
               onChange={(e) => setClientId(e.target.value)}
               className="w-full h-9 px-3 rounded-md bg-[#F6F8FB] border border-[#E4EAF1] text-[13px] text-[#0F1E36] focus:outline-none focus:bg-white focus:border-[#071A34]/40"
             >
-              {CLIENTS.map((c) => (
+              {directory.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.company} — {c.name}
                 </option>

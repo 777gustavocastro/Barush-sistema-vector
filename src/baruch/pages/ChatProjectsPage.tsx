@@ -44,11 +44,16 @@ import type {
 } from '../chat/chatTypes';
 import { CompanyDrawer } from '../chat/CompanyDrawer';
 import { ImageHistoryDrawer } from '../chat/ImageHistoryDrawer';
+import { loadClients, saveClientActivity, subscribeClients } from '../clients/clientStore';
+import type { ClientProfile } from '../clients/clientTypes';
 import { CLIENTS } from '../data/mockData';
+import type { ClientRecord } from '../types';
 
 interface ChatProjectsPageProps {
   globalSearch: string;
   onBreadcrumbChange: (crumb: string | null) => void;
+  requestedClientId?: string | null;
+  onRequestedClientHandled?: () => void;
 }
 
 function nowTime(): string {
@@ -111,7 +116,10 @@ function createInitialConversations(): ChatConversation[] {
 export function ChatProjectsPage({
   globalSearch,
   onBreadcrumbChange,
+  requestedClientId = null,
+  onRequestedClientHandled,
 }: ChatProjectsPageProps) {
+  const [directory, setDirectory] = useState<ClientProfile[]>([]);
   const [conversations, setConversations] = useState<ChatConversation[]>(
     createInitialConversations
   );
@@ -140,8 +148,13 @@ export function ChatProjectsPage({
   const mediaRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const endRef = useRef<HTMLDivElement | null>(null);
 
-  const activeClient =
-    CLIENTS.find((c) => c.id === activeClientId) ?? CLIENTS[0];
+  const visibleClients = directory.filter(
+    (client) => client.status === 'ativo' || client.id === activeClientId
+  );
+  const activeProfile = visibleClients.find((client) => client.id === activeClientId) ?? visibleClients[0];
+  const activeClient: ClientRecord = activeProfile
+    ? toDrawerClient(activeProfile)
+    : (CLIENTS.find((client) => client.id === activeClientId) ?? CLIENTS[0]);
   const activeConv =
     conversations.find((c) => c.clientId === activeClientId) ?? conversations[0];
 
@@ -150,6 +163,75 @@ export function ChatProjectsPage({
       .map((m) => m.media)
       .filter((m): m is ChatMediaItem => Boolean(m));
   }, [activeConv.messages]);
+
+  useEffect(() => {
+    let alive = true;
+    const refresh = () => {
+      loadClients()
+        .then((items) => {
+          if (alive) setDirectory(items);
+        })
+        .catch(() => undefined);
+    };
+    refresh();
+    const unsubscribe = subscribeClients(refresh);
+    return () => {
+      alive = false;
+      unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (visibleClients.length === 0) return;
+    setConversations((current) => {
+      const ids = new Set(current.map((conversation) => conversation.clientId));
+      const missing = visibleClients
+        .filter((client) => !ids.has(client.id))
+        .map((client) => ({
+          id: `conv-${client.id}`,
+          clientId: client.id,
+          updatedAt: nowTime(),
+          messages: [
+            {
+              id: `msg-welcome-${client.id}`,
+              sender: 'ai' as const,
+              text: `Conversa de ${client.company || client.name} pronta. Envie uma solicitação ou anexe imagens para criar, vetorizar, ampliar ou gerar mockups.`,
+              time: nowTime(),
+            },
+          ],
+        }));
+      return missing.length > 0 ? [...current, ...missing] : current;
+    });
+  }, [directory, activeClientId]);
+
+  useEffect(() => {
+    if (!requestedClientId) return;
+    setActiveClientId(requestedClientId);
+    onRequestedClientHandled?.();
+  }, [requestedClientId, onRequestedClientHandled]);
+
+  useEffect(() => {
+    conversations.forEach((conversation) => {
+      const last = [...conversation.messages].reverse().find((message) => message.text || message.media);
+      void saveClientActivity({
+        clientId: conversation.clientId,
+        conversationId: conversation.id,
+        updatedAt: new Date().toISOString(),
+        preview: last?.text ?? '',
+        arts: conversation.messages.flatMap((message) =>
+          message.media
+            ? [
+                {
+                  id: message.media.id,
+                  name: message.media.fileName,
+                  format: message.media.fileName.split('.').pop()?.toUpperCase() || 'IMG',
+                },
+              ]
+            : []
+        ),
+      }).catch(() => undefined);
+    });
+  }, [conversations]);
 
   useEffect(() => {
     onBreadcrumbChange(activeClient.company);
@@ -623,7 +705,7 @@ export function ChatProjectsPage({
     >
       {/* 1. Gaveta lateral esquerda: Empresas e conversas independentes */}
       <CompanyDrawer
-        clients={CLIENTS}
+        clients={directory.length > 0 ? visibleClients.map(toDrawerClient) : CLIENTS}
         activeClientId={activeClientId}
         collapsed={companyDrawerCollapsed}
         onToggleCollapse={() => setCompanyDrawerCollapsed((v) => !v)}
@@ -973,4 +1055,22 @@ function HoverActionBtn({
       <span>{label}</span>
     </button>
   );
+}
+
+function toDrawerClient(client: ClientProfile): ClientRecord {
+  return {
+    id: client.id,
+    name: client.name || client.company,
+    company: client.company || client.name,
+    initials: client.initials,
+    accentColor: client.accentColor,
+    email: client.email,
+    phone: client.phone,
+    document: client.document,
+    city: client.city,
+    totalSpent: 0,
+    ordersCount: 0,
+    activeProjects: 0,
+    lastActivity: '',
+  };
 }

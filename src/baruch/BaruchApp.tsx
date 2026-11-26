@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { BaruchLogo } from './components/BaruchLogo';
 import { Sidebar } from './components/Sidebar';
 import { Topbar } from './components/Topbar';
@@ -9,6 +9,8 @@ import {
   INITIAL_SALES,
 } from './data/mockData';
 import { getNavMeta } from './navigation';
+import { loadClients, subscribeClients } from './clients/clientStore';
+import type { ClientProfile } from './clients/clientTypes';
 import { ChatProjectsPage } from './pages/ChatProjectsPage';
 import { ClientsPage } from './pages/ClientsPage';
 import { DashboardPage } from './pages/DashboardPage';
@@ -20,6 +22,7 @@ import { ReportsPage } from './pages/ReportsPage';
 import { SalesPage } from './pages/SalesPage';
 import { SettingsPage } from './pages/SettingsPage';
 import type {
+  ClientRecord,
   ExpenseRecord,
   NavPageId,
   NotificationItem,
@@ -48,6 +51,43 @@ export function BaruchApp() {
   const [notifications, setNotifications] =
     useState<NotificationItem[]>(INITIAL_NOTIFICATIONS);
   const [productionFocus, setProductionFocus] = useState<ProductionFocus | null>(null);
+  const [clientDirectory, setClientDirectory] = useState<ClientProfile[]>([]);
+  const [chatRequest, setChatRequest] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    const refresh = () => {
+      loadClients()
+        .then((items) => {
+          if (alive) setClientDirectory(items);
+        })
+        .catch(() => undefined);
+    };
+    refresh();
+    const unsubscribe = subscribeClients(refresh);
+    return () => {
+      alive = false;
+      unsubscribe();
+    };
+  }, []);
+
+  const activeSaleClients: ClientRecord[] = clientDirectory
+    .filter((client) => client.status === 'ativo')
+    .map((client) => ({
+      id: client.id,
+      name: client.name || client.company,
+      company: client.company || client.name,
+      initials: client.initials,
+      accentColor: client.accentColor,
+      email: client.email,
+      phone: client.phone,
+      document: client.document,
+      city: client.city,
+      totalSpent: 0,
+      ordersCount: 0,
+      activeProjects: 0,
+      lastActivity: '',
+    }));
 
   const pageMeta = getNavMeta(activePage);
 
@@ -164,6 +204,8 @@ export function BaruchApp() {
             <ChatProjectsPage
               globalSearch={globalSearch}
               onBreadcrumbChange={setBreadcrumb}
+              requestedClientId={chatRequest}
+              onRequestedClientHandled={() => setChatRequest(null)}
             />
           )}
           {activePage === 'products' && <ProductsPage globalSearch={globalSearch} />}
@@ -172,10 +214,19 @@ export function BaruchApp() {
               globalSearch={globalSearch}
               onBreadcrumbChange={setBreadcrumb}
               onNavigate={handleSelectPage}
+              sales={sales}
+              onOpenChat={(clientId) => {
+                setChatRequest(clientId);
+                handleSelectPage('chat_projects');
+              }}
             />
           )}
           {activePage === 'sales' && (
-            <SalesPage sales={sales} onRegisterSale={handleRegisterSale} />
+            <SalesPage
+              sales={sales}
+              onRegisterSale={handleRegisterSale}
+              clients={activeSaleClients}
+            />
           )}
           {activePage === 'reports' && <ReportsPage />}
           {activePage === 'production' && (

@@ -129,7 +129,14 @@ export interface SaleRecord {
   clientName: string;
   itemsSummary: string;
   total: number;
-  paymentMethod: 'PIX' | 'Cartão' | 'Boleto' | 'Transferência';
+  paymentMethod:
+    | 'Dinheiro'
+    | 'PIX'
+    | 'Cartão'
+    | 'Cartão de débito'
+    | 'Cartão de crédito'
+    | 'Boleto'
+    | 'Transferência';
   status: 'confirmada' | 'pendente';
 }
 

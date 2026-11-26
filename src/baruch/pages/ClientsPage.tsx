@@ -623,8 +623,8 @@ function ClientProfile(props: {
                         </div>
                         <div className="text-right shrink-0">
                           <div className="text-[14px] font-semibold text-[#071A34] tabular-nums">{formatBRL(sale.total)}</div>
-                          <div className={`mt-1 inline-flex h-5 items-center px-2 rounded-full text-[11px] font-medium ${sale.status === 'confirmada' ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-800'}`}>
-                            {sale.status === 'confirmada' ? 'Confirmada' : 'Pendente'}
+                          <div className={`mt-1 inline-flex h-5 items-center px-2 rounded-full text-[11px] font-medium ${sale.status === 'confirmada' ? 'bg-emerald-50 text-emerald-700' : sale.status === 'cancelada' ? 'bg-[#F3F6FA] text-[#5A6B82]' : 'bg-amber-50 text-amber-800'}`}>
+                            {sale.status === 'confirmada' ? 'Confirmada' : sale.status === 'cancelada' ? 'Cancelada' : 'Pendente'}
                           </div>
                         </div>
                       </div>
@@ -874,7 +874,7 @@ function EmptyState({ title, text, actionLabel, onAction }: { title: string; tex
 }
 
 function buildFacts(client: ClientProfile, sales: SaleRecord[], activities: ClientActivity[]): ClientFacts {
-  const ownSales = sales.filter((sale) => sale.clientId === client.id);
+  const ownSales = sales.filter((sale) => sale.clientId === client.id && sale.status !== 'cancelada');
   const activity = activities.find((item) => item.clientId === client.id);
   const activityAt = activity?.updatedAt || client.updatedAt;
   const recent = Date.now() - new Date(client.createdAt).getTime() < MONTH || Date.now() - new Date(activityAt).getTime() < MONTH;

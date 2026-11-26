@@ -137,7 +137,7 @@ export interface SaleRecord {
     | 'Cartão de crédito'
     | 'Boleto'
     | 'Transferência';
-  status: 'confirmada' | 'pendente';
+  status: 'confirmada' | 'pendente' | 'cancelada';
 }
 
 export interface NotificationItem {

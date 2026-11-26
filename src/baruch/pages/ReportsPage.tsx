@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { CLIENTS, PRODUCTS, formatBRL } from '../data/mockData';
+import { loadSales } from '../sales/salesStore';
 
 const PERIODS = [
   { id: '30d', label: 'Últimos 30 dias', multiplier: 1 },
@@ -18,6 +19,19 @@ const MONTHLY_SERIES = [
 
 export function ReportsPage() {
   const [periodId, setPeriodId] = useState<(typeof PERIODS)[number]['id']>('30d');
+  const [posTotals, setPosTotals] = useState({ billed: 0, received: 0 });
+
+  useEffect(() => {
+    loadSales()
+      .then((items) => {
+        const open = items.filter((sale) => sale.status !== 'cancelada');
+        setPosTotals({
+          billed: open.reduce((sum, sale) => sum + sale.total, 0),
+          received: open.reduce((sum, sale) => sum + sale.received, 0),
+        });
+      })
+      .catch(() => undefined);
+  }, []);
   const period = PERIODS.find((p) => p.id === periodId) ?? PERIODS[0];
 
   const revenue = Math.round(46511 * period.multiplier);
@@ -35,7 +49,7 @@ export function ReportsPage() {
             Relatórios e gestão financeira
           </h2>
           <p className="text-[12.5px] text-[#5A6B82] mt-0.5">
-            Consolidado de vendas, lucro, custos operacionais, produtos e desempenho de clientes.
+            Consolidado de vendas, lucro, custos operacionais, produtos e desempenho de clientes. PDV: faturado {formatBRL(posTotals.billed)} · recebido {formatBRL(posTotals.received)}.
           </p>
         </div>
 

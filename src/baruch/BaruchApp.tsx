@@ -6,10 +6,10 @@ import {
   INITIAL_EXPENSES,
   INITIAL_NOTIFICATIONS,
   INITIAL_ORDERS,
-  INITIAL_SALES,
 } from './data/mockData';
 import { getNavMeta } from './navigation';
 import { loadClients, subscribeClients } from './clients/clientStore';
+import { loadSales, productionOrdersFromSales, subscribeSales, toSaleRecord } from './sales/salesStore';
 import type { ClientProfile } from './clients/clientTypes';
 import { ChatProjectsPage } from './pages/ChatProjectsPage';
 import { ClientsPage } from './pages/ClientsPage';
@@ -46,7 +46,7 @@ export function BaruchApp() {
   const [signedOut, setSignedOut] = useState(false);
 
   const [orders, setOrders] = useState<ProductionOrder[]>(INITIAL_ORDERS);
-  const [sales, setSales] = useState<SaleRecord[]>(INITIAL_SALES);
+  const [sales, setSales] = useState<SaleRecord[]>([]);
   const [expenses, setExpenses] = useState<ExpenseRecord[]>(INITIAL_EXPENSES);
   const [notifications, setNotifications] =
     useState<NotificationItem[]>(INITIAL_NOTIFICATIONS);
@@ -65,6 +65,33 @@ export function BaruchApp() {
     };
     refresh();
     const unsubscribe = subscribeClients(refresh);
+    return () => {
+      alive = false;
+      unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    const refresh = () => {
+      loadSales()
+        .then((items) => {
+          if (!alive) return;
+          setSales(items.map(toSaleRecord));
+          const generated = productionOrdersFromSales(items);
+          setOrders((current) => {
+            const ids = new Set(current.map((order) => order.id));
+            const fresh = generated.filter((order) => !ids.has(order.id));
+            const cancelled = new Set(
+              items.filter((sale) => sale.status === 'cancelada').flatMap((sale) => sale.productionOrders.map((order) => order.id))
+            );
+            return [...current.filter((order) => !cancelled.has(order.id)), ...fresh];
+          });
+        })
+        .catch(() => undefined);
+    };
+    refresh();
+    const unsubscribe = subscribeSales(refresh);
     return () => {
       alive = false;
       unsubscribe();
